@@ -12,27 +12,6 @@
 
 </div>
 
-## 📑 Table of Contents
-
-- [🎯 What It Does](#-what-it-does)
-- [🚀 Quickstart](#-quickstart)
-  - [📥 Install (or Update)](#-install-or-update)
-  - [🗑️ Uninstall](#️-uninstall)
-- [📋 Requirements](#-requirements)
-- [🔧 What It Installs & Configures](#-what-it-installs--configures)
-  - [1️⃣ `ananicy-cpp` + Rules](#1️-ananicy-cpp--rules)
-  - [2️⃣ EarlyOOM Tuning](#2️-earlyoom-tuning)
-  - [3️⃣ Sysctl Tweaks](#3️-sysctl-tweaks)
-  - [4️⃣ WSL2 / Systemd Manager Limits](#4️-wsl2--systemd-manager-limits)
-  - [5️⃣ Monitoring Tools & Guards](#5️-monitoring-tools--guards)
-  - [6️⃣ Aliases & Environment](#6️-aliases--environment)
-- [🔄 Upgrading / Re-running](#-upgrading--re-running)
-- [❌ What SRPS Does NOT Do](#-what-srps-does-not-do)
-- [🔧 Troubleshooting](#-troubleshooting)
-- [📁 Files Touched by SRPS](#-files-touched-by-srps)
-
----
-
 ## 🎯 What It Does
 
 This repo contains a **single, self-contained shell script** that intelligently wires together:
