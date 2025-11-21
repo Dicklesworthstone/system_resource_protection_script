@@ -6,6 +6,8 @@
 
 [![Linux](https://img.shields.io/badge/Linux-Debian%2FUbuntu-orange?logo=linux)](https://www.debian.org/)
 [![WSL2](https://img.shields.io/badge/WSL2-Supported-blue?logo=microsoft)](https://docs.microsoft.com/en-us/windows/wsl/)
+[![Plan Mode](https://img.shields.io/badge/Mode-Plan%20%2F%20Dry--Run-1f6feb?logo=githubactions&logoColor=white)](#-quickstart)
+[![Configurable](https://img.shields.io/badge/Config-Env%20%2B%20srps.conf-4c1)](#-requirements)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
@@ -23,6 +25,19 @@ This repo contains a **single, self-contained shell script** that intelligently 
 - 📊 **Monitoring tools & aliases** — Visibility and manual control helpers
 
 > ✨ **Designed to be safe to run repeatedly, and fully reversible via `--uninstall`**
+
+```mermaid
+flowchart LR
+    A[Detect system & sudo] --> B{Plan mode?}
+    B -- yes --> C[Show actions only]
+    B -- no --> D[Install packages]
+    D --> E[Build ananicy-cpp]
+    E --> F[Install rules]
+    F --> G[Configure EarlyOOM]
+    G --> H[Apply sysctl + systemd limits]
+    H --> I[Install helpers & aliases]
+    I --> J[Summaries + diagnostics]
+```
 
 ---
 
@@ -205,6 +220,30 @@ If `ananicy-cpp` is not found in `$PATH`, SRPS will:
 </details>
 
 > 💡 **Extending Rules:** You can extend or override these rules by adding your own files under `/etc/ananicy.d`. SRPS only owns `99-system-resource-protection.rules` and the `.srps_backup` metadata file.
+
+```mermaid
+flowchart LR
+  subgraph Scheduling
+    A[ananicy-cpp] --> B[[Rules: community + SRPS]]
+    B --> C[[Nice / IO priority / OOM hints]]
+  end
+  subgraph Memory
+    D[EarlyOOM] --> E[[Prefer / Avoid targets]]
+  end
+  subgraph Kernel & Limits
+    F[sysctl] --> G[[VM + inotify + net + map_count]]
+    H[systemd limits] --> I[[FD / NPROC / accounting]]
+  end
+  subgraph UX
+    J[Monitoring tools]
+    K[Aliases & helpers]
+  end
+  C --> J
+  E --> J
+  G --> J
+  I --> J
+  J --> K
+```
 
 ---
 
