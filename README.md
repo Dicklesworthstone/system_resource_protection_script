@@ -50,14 +50,19 @@ flowchart TB
 
 ### 📥 Install (or Update)
 
+Recommended (with integrity check):
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/verify.sh -o verify.sh
+bash verify.sh latest          # downloads release install.sh + checksum and verifies
+bash install.sh --plan         # preview
+bash install.sh                # apply
 ```
 
-**Preview without changes:**
+Quick (no verification):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash -s -- --plan
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash
 ```
 
 #### What Happens During Install
@@ -90,6 +95,45 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_p
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash -s -- --uninstall --yes
 ```
+
+---
+
+## 📦 Alternative Install Methods
+
+### Homebrew (Linuxbrew/macOS)
+
+```bash
+brew tap Dicklesworthstone/system_resource_protection_script https://github.com/Dicklesworthstone/system_resource_protection_script
+brew install srps
+# Verify & plan
+srps-verify latest
+srps-install --plan
+```
+
+### Nix / Flakes
+
+```bash
+nix run github:Dicklesworthstone/system_resource_protection_script -- --plan   # dry-run
+nix develop github:Dicklesworthstone/system_resource_protection_script         # devShell (shellcheck, git, cmake, pkg-config)
+nix build github:Dicklesworthstone/system_resource_protection_script           # build package (scripts only)
+```
+
+### Docker / OCI Toolbox
+
+Build locally or pull (when published to GHCR):
+
+```bash
+docker build -t srps-tools .
+docker run --rm -it srps-tools              # defaults to --plan
+```
+
+**Caution:** Applying host changes from a container is not recommended. If you truly need to, bind-mount and run privileged, and still use `--plan` first:
+
+```bash
+docker run --rm -it --privileged -v /:/host srps-tools --plan
+```
+
+---
 
 #### What Gets Removed
 
@@ -324,6 +368,18 @@ SRPS_EARLYOOM_ARGS="-m 4 -s 10 --prefer 'chrome|node' --avoid 'Xorg|gnome-shell'
   - `ENABLE_ANANICY`, `ENABLE_EARLYOOM`, `ENABLE_SYSCTL`, `ENABLE_WSL_LIMITS`, `ENABLE_TOOLS`, `ENABLE_SHELL_ALIASES`, `ENABLE_HTML_REPORT`, `ENABLE_RULE_PULL`.
 - `SRPS_EARLYOOM_ARGS` can override EarlyOOM args; if blank/invalid, SRPS falls back to defaults.
 - `DRY_RUN=1` is implied by `--plan`; no system changes are made.
+
+### 🔐 Integrity Verification
+
+- Every release uploads `install.sh` and `install.sh.sha256` as assets.
+- Use `verify.sh <tag|latest>` to download and verify before running.
+- The Homebrew formula and Nix package ship the same scripts; for source installs, you can also run:
+
+```bash
+curl -fsSL https://github.com/Dicklesworthstone/system_resource_protection_script/releases/download/v1.0.0/install.sh.sha256 -o install.sh.sha256
+curl -fsSL https://github.com/Dicklesworthstone/system_resource_protection_script/releases/download/v1.0.0/install.sh -o install.sh
+sha256sum -c install.sh.sha256
+```
 
 **Parameters Explained:**
 

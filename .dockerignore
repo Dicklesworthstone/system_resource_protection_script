@@ -1,0 +1,7 @@
+.git
+.github
+.DS_Store
+*.swp
+*.swo
+node_modules
+**/__pycache__

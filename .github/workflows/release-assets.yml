@@ -1,0 +1,29 @@
+name: Release Assets
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Generate checksums
+        run: |
+          sha256sum install.sh > install.sh.sha256
+          echo "Generated checksums:" && cat install.sh.sha256
+
+      - name: Upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            install.sh
+            install.sh.sha256
+            verify.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
