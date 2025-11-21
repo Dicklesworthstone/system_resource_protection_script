@@ -1,0 +1,590 @@
+<div align="center">
+
+# 🛡️ System Resource Protection Script (SRPS)
+
+**Make it *hard* for runaway dev processes and heavy desktop apps to freeze your Linux box (or WSL2 instance), while keeping interactive workloads snappy.**
+
+[![Linux](https://img.shields.io/badge/Linux-Debian%2FUbuntu-orange?logo=linux)](https://www.debian.org/)
+[![WSL2](https://img.shields.io/badge/WSL2-Supported-blue?logo=microsoft)](https://docs.microsoft.com/en-us/windows/wsl/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+---
+
+</div>
+
+## 📑 Table of Contents
+
+- [🎯 What It Does](#-what-it-does)
+- [🚀 Quickstart](#-quickstart)
+  - [📥 Install (or Update)](#-install-or-update)
+  - [🗑️ Uninstall](#️-uninstall)
+- [📋 Requirements](#-requirements)
+- [🔧 What It Installs & Configures](#-what-it-installs--configures)
+  - [1️⃣ `ananicy-cpp` + Rules](#1️-ananicy-cpp--rules)
+  - [2️⃣ EarlyOOM Tuning](#2️-earlyoom-tuning)
+  - [3️⃣ Sysctl Tweaks](#3️-sysctl-tweaks)
+  - [4️⃣ WSL2 / Systemd Manager Limits](#4️-wsl2--systemd-manager-limits)
+  - [5️⃣ Monitoring Tools & Guards](#5️-monitoring-tools--guards)
+  - [6️⃣ Aliases & Environment](#6️-aliases--environment)
+- [🔄 Upgrading / Re-running](#-upgrading--re-running)
+- [❌ What SRPS Does NOT Do](#-what-srps-does-not-do)
+- [🔧 Troubleshooting](#-troubleshooting)
+- [📁 Files Touched by SRPS](#-files-touched-by-srps)
+
+---
+
+## 🎯 What It Does
+
+This repo contains a **single, self-contained shell script** that intelligently wires together:
+
+- 🔧 **[`ananicy-cpp`](https://gitlab.com/ananicy-cpp/ananicy-cpp)** — Auto-nicer with curated rules for compilers, browsers, IDEs, language servers, containers, etc.
+- ⚡ **[`earlyoom`](https://github.com/rfjakob/earlyoom)** — OOM killer tuned for developer workflows, preferring to kill obvious hogs instead of your WM/terminal
+- ⚙️ **Kernel (`sysctl`) tweaks** — Biased towards interactivity and IDEs
+- 🔒 **WSL2 / systemd manager limits** — Prevents pathological file descriptor / process explosions
+- 📊 **Monitoring tools & aliases** — Visibility and manual control helpers
+
+> ✨ **Designed to be safe to run repeatedly, and fully reversible via `--uninstall`**
+
+---
+
+## 🚀 Quickstart
+
+### 📥 Install (or Update)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash
+```
+
+#### What Happens During Install
+
+The script performs **6 steps**:
+
+1. **🔨 Build & Install** `ananicy-cpp` from source (if not already present)
+2. **📋 Configure Rules** — Replaces/augments Ananicy rules with:
+   - CachyOS community rules (best-effort fetch)
+   - SRPS-specific ruleset targeting heavy dev/desktop workloads
+3. **⚡ Setup EarlyOOM** — Installs and configures with dev-friendly defaults
+4. **⚙️ Apply Kernel Tweaks** — `sysctl` optimizations for responsiveness and IDEs
+5. **🔒 Set Systemd Limits** — Manager limits (especially useful on WSL2)
+6. **📊 Install Tools** — Monitoring utilities and shell aliases
+
+> 💡 **Re-running the same command is idempotent** — it updates configs in-place and keeps backups of anything it overwrites.
+
+---
+
+### 🗑️ Uninstall
+
+To undo SRPS configuration and restore backups where possible:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash -s -- --uninstall
+```
+
+**Non-interactive uninstall:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash -s -- --uninstall --yes
+```
+
+#### What Gets Removed
+
+- ✅ SRPS-created helpers (`sysmon`, `check-throttled`, `cursor-guard`, `kill-cursor`) from `/usr/local/bin`
+- ✅ Restores backed-up configs (Ananicy rules, EarlyOOM, sysctl, systemd manager) where backups exist
+- ✅ Removes only SRPS-owned files; leaves unrelated config untouched
+- ⚠️ **Does NOT uninstall packages** (`ananicy-cpp`, `earlyoom`) — that's left to you
+
+---
+
+## 📋 Requirements
+
+| Requirement | Description | Status |
+|------------|-------------|--------|
+| **OS** | Linux (Debian/Ubuntu/derivative) or WSL2 with Debian/Ubuntu rootfs | ✅ Required |
+| **systemd** | Recommended for services and `systemd-run` aliases | ⚠️ Optional* |
+| **sudo** | Configured for your user | ✅ Required |
+| **apt-get** | Package manager | ✅ Required |
+
+> ⚠️ **Important:** The script **must** be run as a regular user with sudo — **not** as root.
+
+\* *The script will still run without systemd, but some features will be skipped.*
+
+---
+
+## 🔧 What It Installs & Configures
+
+### 1️⃣ `ananicy-cpp` + Rules
+
+#### Binary Installation
+
+If `ananicy-cpp` is not found in `$PATH`, SRPS will:
+
+1. Install build dependencies (via `apt-get`)
+2. Clone `ananicy-cpp` from GitLab
+3. Build and `make install` into `/usr/local`
+4. Enable and start `ananicy-cpp` via `systemd` (if available)
+
+#### Rules Configuration
+
+**Backups:**
+- If `/etc/ananicy.d` exists, it's backed up once to: `/etc/ananicy.d.backup-YYYYMMDD-HHMMSS`
+- Backup path recorded in `/etc/ananicy.d/.srps_backup` for uninstall restoration
+
+**Population:**
+- `/etc/ananicy.d` is recreated and populated with:
+  - Community rules from [`CachyOS/ananicy-rules`](https://github.com/CachyOS/ananicy-rules) (best effort)
+  - SRPS custom rules: `/etc/ananicy.d/00-default/99-system-resource-protection.rules`
+
+#### Custom Rule Highlights
+
+<details>
+<summary><b>📦 Compilers & Build Tools</b></summary>
+
+- `cargo`, `rustc`, `cc1`, `cc1plus`, `ld`, `lld`, `mold`
+- `gcc`, `g++`, `clang`, `clang++`, `make`, `ninja`, `cmake`
+- **Scheduler:** `batch`/`idle` with high positive nice values
+
+</details>
+
+<details>
+<summary><b>🟢 Node.js + Bundlers</b></summary>
+
+- `node`, `npm`, `yarn`, `pnpm`, `webpack`, `rollup`, `vite`
+- **Priority:** Lower CPU, best-effort IO, moderately raised OOM score
+
+</details>
+
+<details>
+<summary><b>🌐 Browsers</b></summary>
+
+- `chrome`, `chromium`, `brave`, `firefox`, `firefox-esr`, `msedge`
+- **Priority:** Nicely prioritized but not allowed to dominate CPU/RAM, elevated `OOM_SCORE_ADJ`
+
+</details>
+
+<details>
+<summary><b>⚡ Electron Apps</b></summary>
+
+- `slack`, `discord`, `teams`, `zoom`, `code`, `vscode`, `electron`
+- **Priority:** Nice levels further from zero, higher `OOM_SCORE_ADJ` for "chatty" ones
+
+</details>
+
+<details>
+<summary><b>💻 Cursor / IDE Tooling</b></summary>
+
+- `cursor`, `Cursor`, `cursor.exe`
+- **Priority:** Relatively responsive but with non-zero nice and modest `OOM_SCORE_ADJ`
+
+</details>
+
+<details>
+<summary><b>🔌 Language Servers & Tools</b></summary>
+
+- `tsserver`, `typescript-language-server`, `eslint`, `prettier`, `pyright-langserver`
+
+</details>
+
+<details>
+<summary><b>🐍 Python / Data Science</b></summary>
+
+- `python`, `python3`, `ipython` — slightly de-prioritized
+- `jupyter-*` (notebook, lab) — kill candidates when memory is tight
+- `pip`, `pip3` — batch jobs with idle I/O
+
+</details>
+
+<details>
+<summary><b>☕ JVM Builds</b></summary>
+
+- `java`, `gradle`, `mvn`, `sbt` — nudged toward background behavior
+
+</details>
+
+<details>
+<summary><b>🐳 Containers / Virtualization</b></summary>
+
+- `dockerd`, `containerd`, `podman`
+- `qemu-system-x86_64`, `virt-qemu`, `virsh`
+
+</details>
+
+> 💡 **Extending Rules:** You can extend or override these rules by adding your own files under `/etc/ananicy.d`. SRPS only owns `99-system-resource-protection.rules` and the `.srps_backup` metadata file.
+
+---
+
+### 2️⃣ EarlyOOM Tuning
+
+#### Binary Installation
+
+If `earlyoom` is missing, SRPS installs it via `apt-get`.
+
+#### Configuration
+
+**Location:** `/etc/default/earlyoom`
+
+**Backups:** Existing file backed up to `/etc/default/earlyoom.srps-backup` if it doesn't look SRPS-owned.
+
+**SRPS Configuration:**
+
+```bash
+EARLYOOM_ARGS="-r 300 -m 2 -s 5 \
+  --avoid '^(Xorg|gnome-shell|systemd|sshd|sway|wayland|code|vscode)$' \
+  --prefer '^(chrome|chromium|firefox|brave|cargo|rustc|node|npm|yarn|pnpm|java|python3?|jupyter.*|cursor|slack|discord)$'"
+```
+
+**Parameters Explained:**
+
+| Parameter | Value | Purpose |
+|-----------|-------|---------|
+| `-r 300` | Log every 5 minutes | Reduce log noise |
+| `-m 2` | Act at 2% free memory | Early intervention |
+| `-s 5` | Act at 5% free swap | Prevent swap exhaustion |
+| `--avoid` | Session-critical services | Keeps WM, terminal, SSH safe |
+| `--prefer` | Heavy workloads | Encourages killing browsers, build tools, Notebook/Lab, Slack/Discord |
+
+**Service Management:**
+
+- `systemctl enable --now earlyoom`
+- If systemd isn't present, SRPS will still install and configure but won't attempt service management
+
+---
+
+### 3️⃣ Sysctl Tweaks
+
+**Configuration File:** `/etc/sysctl.d/99-system-resource-protection.conf`
+
+#### Tuning Categories
+
+**🖥️ VM Tuning (Interactive Responsiveness):**
+
+```ini
+vm.swappiness = 10              # Reduce swap usage
+vm.vfs_cache_pressure = 50      # Balanced cache pressure
+vm.dirty_background_ratio = 5   # Background writeback threshold
+vm.dirty_ratio = 10             # Writeback threshold
+```
+
+**👀 Inotify Limits (IDE/File Watchers):**
+
+```ini
+fs.inotify.max_user_watches = 524288    # Support large codebases
+fs.inotify.max_user_instances = 1024    # Multiple watcher instances
+```
+
+**🌐 Network Defaults (No-op if unsupported):**
+
+```ini
+net.core.default_qdisc = fq                    # Fair Queue packet scheduler
+net.ipv4.tcp_congestion_control = bbr         # BBR congestion control
+```
+
+**🗺️ Memory Mappings (Large Processes/Containers):**
+
+```ini
+vm.max_map_count = 2147483642    # Support containers and large processes
+```
+
+> ⚠️ **Note:** `sysctl -p` is run on this file. If your kernel doesn't support some tunables, SRPS will warn but not abort.
+
+**Uninstall:** SRPS either restores a backup (if one exists) or removes this file and triggers `sysctl --system`.
+
+---
+
+### 4️⃣ WSL2 / Systemd Manager Limits
+
+**Configuration File:** `/etc/systemd/system.conf.d/10-system-resource-protection.conf`
+
+**Applies:** Only if `systemd` is present
+
+**Configuration:**
+
+```ini
+# Generated by system_resource_protection_script
+[Manager]
+DefaultCPUAccounting=yes        # Per-unit CPU accounting
+DefaultMemoryAccounting=yes    # Per-unit memory accounting
+DefaultTasksAccounting=yes      # Per-unit task accounting
+DefaultLimitNOFILE=1048576     # File descriptor limit
+DefaultLimitNPROC=32768        # Process limit
+```
+
+**What This Does:**
+
+- ✅ Enables per-unit CPU / memory / task accounting by default
+- ✅ Raises default limits for file descriptors and processes
+- ✅ **Especially helpful in WSL2** where resource defaults can be surprisingly low
+
+> ⚠️ **Important:** Changes take effect on the next boot of PID 1 (i.e., next full system or WSL systemd session restart).
+
+**Uninstall:** SRPS restores a backup if present or removes this file (if SRPS-owned) and reloads systemd's configuration.
+
+---
+
+### 5️⃣ Monitoring Tools & Guards
+
+SRPS installs **four helper utilities** into `/usr/local/bin`:
+
+#### 📊 `sysmon`
+
+**Live system resource monitor**
+
+```bash
+sysmon
+```
+
+**Displays:**
+- 📈 Load averages
+- 💾 Memory usage + percentage
+- 🔥 Top CPU hogs (with nice and memory usage)
+- ⚡ Processes with **positive nice** values (throttled by Ananicy / manual renice)
+
+> 💡 **Use Case:** Quickly verify whether SRPS rules are doing their job
+
+---
+
+#### 🔍 `check-throttled`
+
+**List currently throttled processes**
+
+```bash
+check-throttled
+```
+
+**Shows:**
+- CPU%, MEM%, NI (nice), IO class for processes with `nice > 0`
+
+> 💡 **Use Case:** Verify whether specific workloads are being de-prioritized
+
+---
+
+#### 🛡️ `cursor-guard`
+
+**Watchdog for runaway Node/Cursor processes**
+
+```bash
+cursor-guard
+```
+
+**Protection:**
+- 🚨 **Runaway `node` clusters** — If count exceeds `MAX_NODE` (default: 25), kills oldest extras
+- 🔥 **Excessive CPU usage** — If total CPU > `MAX_CPU` (default: 85%), renices top CPU hogs to `19`
+
+**Custom Thresholds:**
+
+```bash
+MAX_NODE=40 MAX_CPU=90 cursor-guard
+```
+
+---
+
+#### 💣 `kill-cursor`
+
+**Nuclear option for Cursor processes**
+
+```bash
+kill-cursor
+```
+
+**Kills anything matching:**
+- `cursor`
+- `node.*cursor`
+- `electron.*cursor`
+
+**Method:** First `TERM`, then `KILL` if still alive
+
+> ⚠️ **Uninstall:** SRPS removes only its own versions of these scripts and restores any `.srps-backup` copies if they existed before.
+
+---
+
+### 6️⃣ Aliases & Environment
+
+SRPS appends a configuration block to your shell rc file:
+
+**Detection Order:**
+1. `ZDOTDIR/.zshrc`
+2. `~/.zshrc`
+3. `~/.bashrc`
+
+**Block Markers:**
+
+```bash
+# >>> system_resource_protection_script >>>
+...
+# <<< system_resource_protection_script <<<
+```
+
+#### Resource-Limited Command Runners
+
+```bash
+limited          # Run any command with 50% CPU cap
+limited-mem      # Run any command with 8G memory cap
+cargo-limited    # Run cargo with 75% CPU + 50G memory limits
+make-limited     # Run make with 75% CPU limit
+node-limited     # Run node with 75% CPU + 8G memory limits
+```
+
+#### Monitoring Shortcuts
+
+```bash
+sys        # Alias for sysmon
+throttled  # Alias for check-throttled
+```
+
+#### Environment Variables
+
+```bash
+export TMPDIR=/tmp
+export CARGO_TARGET_DIR=/tmp/cargo-target
+```
+
+**After Install:**
+
+```bash
+source ~/.zshrc   # or ~/.bashrc, depending on what you use
+# or just start a new terminal
+```
+
+> 🗑️ **Uninstall:** SRPS removes this block from both `~/.bashrc` and `~/.zshrc` (if present).
+
+---
+
+## 🔄 Upgrading / Re-running
+
+You can safely re-run the install command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash
+```
+
+**What Happens:**
+
+- ✅ Rebuild/reinstall `ananicy-cpp` only if it's missing
+- ✅ Re-apply rules and configs
+- ✅ Preserve or reuse backups appropriately (no infinite backup chains)
+- ✅ Recreate helper scripts if they were deleted
+
+---
+
+## ❌ What SRPS **Does NOT** Do
+
+**SRPS does NOT:**
+
+- 🚫 Try to be a generic Linux tuning oracle
+- 🚫 Touch GPU scheduling, I/O schedulers (beyond Ananicy's control), or userland DBs
+- 🚫 Manage cgroup trees beyond simple `systemd-run` CPU/memory limits for user commands
+- 🚫 Uninstall packages on its own — it only cleans up what it creates/configures
+
+**SRPS Assumes:**
+
+- ✅ You're okay with some opinionated defaults
+- ✅ You can read/edit the script and rules if needed
+
+---
+
+## 🔧 Troubleshooting
+
+### ⚠️ Services Look Inactive
+
+**Check Status:**
+
+```bash
+systemctl status ananicy-cpp
+systemctl status earlyoom
+```
+
+**If They're Failing:**
+
+**View Logs:**
+
+```bash
+sudo journalctl -u ananicy-cpp -e
+sudo journalctl -u earlyoom -e
+```
+
+**Common Issues:**
+- Conflicting schedulers (e.g., sched-ext)
+- Unsupported kernel tunables
+
+---
+
+### 🔍 Ananicy Rules Not Applying
+
+**Verify Ananicy is Running:**
+
+```bash
+ps aux | grep ananicy-cpp | grep -v grep
+```
+
+**Confirm Rules Directory:**
+
+```bash
+ls /etc/ananicy.d
+```
+
+**Inspect SRPS Rule File:**
+
+```bash
+sudo less /etc/ananicy.d/00-default/99-system-resource-protection.rules
+```
+
+**Check Process Throttling:**
+
+```bash
+check-throttled    # See throttled processes
+sysmon            # Live monitor
+```
+
+---
+
+### 📉 System Behaves Worse
+
+The script is intentionally conservative, but tuning is always workload-dependent.
+
+**Quick Fixes:**
+
+1. **Tweak Rules:** Comment out or modify specific entries in `99-system-resource-protection.rules`
+
+2. **Temporarily Disable EarlyOOM:**
+
+   ```bash
+   sudo systemctl stop earlyoom
+   ```
+
+3. **Full Revert:**
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash -s -- --uninstall
+   ```
+
+---
+
+## 📁 Files Touched by SRPS
+
+### ⚙️ Configuration Files
+
+| File | Backup Location |
+|------|----------------|
+| `/etc/ananicy.d/` (full tree) | `/etc/ananicy.d.backup-*` + `.srps_backup` marker |
+| `/etc/ananicy.d/00-default/99-system-resource-protection.rules` | Included in `/etc/ananicy.d` backup |
+| `/etc/default/earlyoom` | `/etc/default/earlyoom.srps-backup` |
+| `/etc/sysctl.d/99-system-resource-protection.conf` | `*.srps-backup` |
+| `/etc/systemd/system.conf.d/10-system-resource-protection.conf` | `*.srps-backup` |
+
+### 🔧 Binary / Helper Scripts
+
+| Script | Location |
+|--------|----------|
+| `sysmon` | `/usr/local/bin/sysmon` |
+| `check-throttled` | `/usr/local/bin/check-throttled` |
+| `cursor-guard` | `/usr/local/bin/cursor-guard` |
+| `kill-cursor` | `/usr/local/bin/kill-cursor` |
+
+### 🐚 Shell Configuration
+
+| File | Notes |
+|------|-------|
+| `~/.zshrc` | Or `$ZDOTDIR/.zshrc` if set |
+| `~/.bashrc` | Fallback if zsh not detected |
+
+> ✅ **All SRPS-owned things are either clearly marked or backed up**, so you can reason about and audit changes quickly.
+
