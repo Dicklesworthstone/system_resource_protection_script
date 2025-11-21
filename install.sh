@@ -20,9 +20,22 @@ MAGENTA='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 BOLD='\033[1m'
-DIM='\033[2m'
 
 TOTAL_STEPS=6
+
+# Config defaults (can be overridden by srps.conf or env)
+ENABLE_ANANICY=${ENABLE_ANANICY:-1}
+ENABLE_EARLYOOM=${ENABLE_EARLYOOM:-1}
+ENABLE_SYSCTL=${ENABLE_SYSCTL:-1}
+ENABLE_WSL_LIMITS=${ENABLE_WSL_LIMITS:-1}
+ENABLE_TOOLS=${ENABLE_TOOLS:-1}
+ENABLE_SHELL_ALIASES=${ENABLE_SHELL_ALIASES:-1}
+ENABLE_SAMPLER=${ENABLE_SAMPLER:-1}
+ENABLE_HTML_REPORT=${ENABLE_HTML_REPORT:-1}
+ENABLE_RULE_PULL=${ENABLE_RULE_PULL:-1}
+ENABLE_DIAGNOSTICS=${ENABLE_DIAGNOSTICS:-1}
+DRY_RUN=0
+CONFIG_FILE="${SRPS_CONFIG_FILE:-./srps.conf}"
 
 HAS_SYSTEMD=0
 IS_WSL=0
@@ -31,6 +44,7 @@ APT_UPDATED=0
 SHELL_RC=""
 ACTION="install"
 FORCE="no"
+ON_BATTERY=0
 
 # --------------- Logging Helpers -----------------------------
 print_step() {
@@ -69,6 +83,7 @@ Usage:
   install.sh --install      Same as above
   install.sh --uninstall    Remove protection and restore backups where possible
   install.sh --uninstall -y Non-interactive uninstall
+  install.sh --plan         Show what would be changed (dry run)
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash
@@ -103,6 +118,10 @@ while [ $# -gt 0 ]; do
             ;;
         --uninstall)
             ACTION="uninstall"
+            ;;
+        --plan)
+            ACTION="plan"
+            DRY_RUN=1
             ;;
         -y|--yes)
             FORCE="yes"
@@ -150,24 +169,96 @@ detect_system() {
     fi
 }
 
+detect_power_profile() {
+    if command -v on_ac_power >/dev/null 2>&1; then
+        if on_ac_power; then
+            ON_BATTERY=0
+        else
+            ON_BATTERY=1
+        fi
+    elif command -v upower >/dev/null 2>&1; then
+        local battery
+        battery=$(upower -e 2>/dev/null | grep BAT | head -n1 || true)
+        if [ -n "$battery" ] && upower -i "$battery" 2>/dev/null | grep -qi "state:.*discharging"; then
+            ON_BATTERY=1
+        fi
+    fi
+}
+
+load_config() {
+    local file="$CONFIG_FILE"
+    if [ -f "$file" ]; then
+        print_info "Loading configuration from $file"
+        # shellcheck disable=SC1090
+        . "$file"
+    elif [ -f /etc/system-resource-protection.conf ]; then
+        file=/etc/system-resource-protection.conf
+        print_info "Loading configuration from $file"
+        # shellcheck disable=SC1090
+        . "$file"
+    fi
+}
+
+maybe_dry_run() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        print_info "[plan mode] $1"
+        return 0
+    fi
+    return 1
+}
+
+retry_cmd() {
+    local attempts=${2:-3}
+    local delay=2
+    local i
+    for i in $(seq 1 "$attempts"); do
+        : "$i"
+        if eval "$1"; then
+            return 0
+        fi
+        sleep "$delay"
+        delay=$((delay * 2))
+    done
+    return 1
+}
+
+git_clone_retry() {
+    local url="$1" dest="$2"
+    retry_cmd "git clone -q --depth 1 $url $dest" 3
+}
+
 apt_install() {
     if [ "$HAS_APT" -ne 1 ]; then
         die "apt is not available but was expected."
     fi
 
     if [ "$APT_UPDATED" -eq 0 ]; then
-        print_info "Updating package index (apt-get update)..."
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        if maybe_dry_run "Would run: sudo apt-get update"; then
+            :
+        else
+            print_info "Updating package index (apt-get update)..."
+            sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        fi
         APT_UPDATED=1
     fi
 
     print_info "Installing packages: $*"
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null
+    if maybe_dry_run "Would install: $*"; then
+        return
+    fi
+    local quoted_pkgs
+    quoted_pkgs=$(printf " %q" "$@")
+    retry_cmd "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq${quoted_pkgs} >/dev/null" 3 || die "apt-get install failed for: $*"
 }
 
 # --------------- Step 1: Install Ananicy-cpp -----------------
 install_ananicy_cpp() {
     print_step "[1/${TOTAL_STEPS}] Installing Ananicy-cpp (process auto-nicer)"
+
+    if [ "$ENABLE_ANANICY" -ne 1 ]; then
+        print_warning "Ananicy-cpp installation skipped by configuration."
+        return
+    fi
 
     if ! command -v git >/dev/null 2>&1; then
         apt_install git
@@ -181,14 +272,19 @@ install_ananicy_cpp() {
     apt_install cmake build-essential libsystemd-dev libfmt-dev libspdlog-dev nlohmann-json3-dev pkg-config
 
     print_info "Building ananicy-cpp from source (GitLab)..."
+    if maybe_dry_run "Would clone, build, and install ananicy-cpp from source"; then
+        return
+    fi
     tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT RETURN
     (
         cd "$tmpdir"
-        git clone -q https://gitlab.com/ananicy-cpp/ananicy-cpp.git
+        git_clone_retry https://gitlab.com/ananicy-cpp/ananicy-cpp.git ananicy-cpp
         cd ananicy-cpp
         mkdir -p build
         cd build
-        cmake .. >/dev/null
+        cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_SYSTEMD=ON -DUSE_EXTERNAL_JSON=ON \
+            -DUSE_EXTERNAL_SPDLOG=ON -DUSE_EXTERNAL_FMTLIB=ON >/dev/null
         make -j"$(nproc)" >/dev/null
         sudo make install >/dev/null
     )
@@ -205,11 +301,20 @@ install_ananicy_cpp() {
 configure_ananicy_rules() {
     print_step "[2/${TOTAL_STEPS}] Configuring Ananicy rules (browsers, compilers, IDEs, etc.)"
 
+    if [ "$ENABLE_ANANICY" -ne 1 ]; then
+        print_warning "Ananicy rule configuration skipped by configuration."
+        return
+    fi
+
     if [ "$HAS_SYSTEMD" -ne 1 ]; then
         print_warning "Systemd not detected; ananicy-cpp service management may not work automatically."
     fi
 
     local backup_dir=""
+    if maybe_dry_run "Would replace /etc/ananicy.d with backup and new rules"; then
+        return
+    fi
+
     if [ -d /etc/ananicy.d ]; then
         if sudo test -f /etc/ananicy.d/.srps_backup 2>/dev/null; then
             backup_dir="$(sudo cat /etc/ananicy.d/.srps_backup 2>/dev/null | head -n1 || echo "")"
@@ -226,9 +331,9 @@ configure_ananicy_rules() {
     (
         cd /etc/ananicy.d
         print_info "Fetching community Ananicy rules (CachyOS)..."
-        sudo git clone -q https://github.com/CachyOS/ananicy-rules.git temp_rules || {
+        if ! retry_cmd "sudo git clone -q --depth 1 https://github.com/CachyOS/ananicy-rules.git temp_rules" 3; then
             print_warning "Failed to clone community rules; proceeding with SRPS custom rules only."
-        }
+        fi
         if [ -d temp_rules ]; then
             sudo mv temp_rules/* . 2>/dev/null || true
             sudo rm -rf temp_rules
@@ -338,16 +443,24 @@ EOF
 
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         print_info "Enabling and starting ananicy-cpp service..."
-        sudo systemctl daemon-reload
-        if sudo systemctl enable --now ananicy-cpp >/dev/null 2>&1; then
+        if maybe_dry_run "Would systemctl daemon-reload && enable --now ananicy-cpp"; then
+            :
+        else
+            sudo systemctl daemon-reload
+            if sudo systemctl enable --now ananicy-cpp >/dev/null 2>&1; then
             sleep 2
             local rule_count="?"
             if command -v journalctl >/dev/null 2>&1; then
                 rule_count="$(sudo journalctl -u ananicy-cpp -n 50 --no-pager 2>/dev/null | grep -oP 'Worker initialized with \K[0-9]+' | tail -1 || echo '?')"
             fi
             print_success "ananicy-cpp is active (rules loaded: ${rule_count})"
+
+            if systemctl is-active --quiet gamemoded.service 2>/dev/null; then
+                print_warning "gamemoded.service is active. GameMode and ananicy-cpp both renice processes and can conflict; if you see odd scheduling behaviour, consider disabling one of them."
+            fi
         else
             print_warning "Failed to enable/start ananicy-cpp; check with: sudo systemctl status ananicy-cpp"
+        fi
         fi
     else
         print_warning "Skipping ananicy-cpp service enable (no systemd detected)."
@@ -358,6 +471,11 @@ EOF
 install_and_configure_earlyoom() {
     print_step "[3/${TOTAL_STEPS}] Installing and configuring EarlyOOM"
 
+    if [ "$ENABLE_EARLYOOM" -ne 1 ]; then
+        print_warning "EarlyOOM installation/configuration skipped by configuration."
+        return
+    fi
+
     if ! command -v earlyoom >/dev/null 2>&1; then
         apt_install earlyoom
         print_success "earlyoom installed"
@@ -365,28 +483,81 @@ install_and_configure_earlyoom() {
         print_success "earlyoom already installed"
     fi
 
+    if [ "$HAS_SYSTEMD" -eq 1 ] && systemctl is-active --quiet systemd-oomd.service 2>/dev/null; then
+        print_warning "systemd-oomd.service is active; earlyoom + systemd-oomd can overlap. Consider disabling one of them if you see double OOM handling."
+    fi
+
     if sudo test -f /etc/default/earlyoom 2>/dev/null && ! sudo grep -q "system_resource_protection_script" /etc/default/earlyoom 2>/dev/null; then
-        print_info "Backing up existing /etc/default/earlyoom to /etc/default/earlyoom.srps-backup"
-        sudo cp /etc/default/earlyoom /etc/default/earlyoom.srps-backup
+        if maybe_dry_run "Would back up /etc/default/earlyoom to /etc/default/earlyoom.srps-backup"; then
+            :
+        else
+            print_info "Backing up existing /etc/default/earlyoom to /etc/default/earlyoom.srps-backup"
+            sudo cp /etc/default/earlyoom /etc/default/earlyoom.srps-backup
+        fi
     fi
 
     print_info "Writing SRPS EarlyOOM preferences..."
-    sudo tee /etc/default/earlyoom >/dev/null << 'EOF'
+    local earlyoom_args_value earlyoom_args_comment earlyoom_args_escaped
+
+    if [ -n "${SRPS_EARLYOOM_ARGS:-}" ]; then
+        if printf '%s' "$SRPS_EARLYOOM_ARGS" | grep -q $'\n'; then
+            print_warning "SRPS_EARLYOOM_ARGS contains newlines; collapsing to a single line."
+            earlyoom_args_value=$(printf '%s' "$SRPS_EARLYOOM_ARGS" | tr '\n' ' ')
+        else
+            earlyoom_args_value="$SRPS_EARLYOOM_ARGS"
+        fi
+
+        if [ -z "${earlyoom_args_value//[[:space:]]/}" ]; then
+            print_warning "SRPS_EARLYOOM_ARGS is empty after cleanup; falling back to SRPS defaults."
+            earlyoom_args_value=""
+        else
+            earlyoom_args_comment="# Using custom EARLYOOM_ARGS from SRPS_EARLYOOM_ARGS"
+        fi
+    fi
+
+    if [ -z "${earlyoom_args_value:-}" ]; then
+        if [ "$ON_BATTERY" -eq 1 ]; then
+            earlyoom_args_comment="# Default SRPS configuration (laptop/battery: slightly earlier intervention)"
+            earlyoom_args_value="-r 300 -m 4 -s 8 \
+  --avoid 'Xorg|gnome-shell|systemd|sshd|sway|wayland|plasmashell|kwin_x11|kwin_wayland|code|vscode' \
+  --prefer 'chrome|chromium|firefox|brave|msedge|cargo|rustc|node|npm|yarn|pnpm|java|python3?|jupyter.*|cursor|slack|discord|teams|zoom' \
+  --ignore-root-user -p"
+        else
+            earlyoom_args_comment="# Default SRPS configuration (tuned for interactive dev workloads)"
+            earlyoom_args_value="-r 300 -m 2 -s 5 \
+  --avoid 'Xorg|gnome-shell|systemd|sshd|sway|wayland|plasmashell|kwin_x11|kwin_wayland|code|vscode' \
+  --prefer 'chrome|chromium|firefox|brave|msedge|cargo|rustc|node|npm|yarn|pnpm|java|python3?|jupyter.*|cursor|slack|discord|teams|zoom' \
+  --ignore-root-user -p"
+        fi
+    fi
+
+    earlyoom_args_escaped=$(printf '%q' "$earlyoom_args_value")
+
+    if maybe_dry_run "Would write /etc/default/earlyoom with EARLYOOM_ARGS"; then
+        :
+    else
+        sudo tee /etc/default/earlyoom >/dev/null <<EOF
 # Generated by system_resource_protection_script
 # -r 300 : log every 5 minutes
 # -m 2   : act when free memory < 2%
 # -s 5   : act when free swap < 5%
-EARLYOOM_ARGS="-r 300 -m 2 -s 5 \
-  --avoid '^(Xorg|gnome-shell|systemd|sshd|sway|wayland|code|vscode)$' \
-  --prefer '^(chrome|chromium|firefox|brave|cargo|rustc|node|npm|yarn|pnpm|java|python3?|jupyter.*|cursor|slack|discord)$'"
+#   -p                 : keep earlyoom itself highly prioritized
+#   --ignore-root-user : avoid killing root-owned system services
+$earlyoom_args_comment
+EARLYOOM_ARGS=$earlyoom_args_escaped
 EOF
+    fi
 
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         print_info "Enabling and restarting earlyoom..."
-        if sudo systemctl enable --now earlyoom >/dev/null 2>&1; then
-            print_success "earlyoom is active and protecting against OOM freezes"
+        if maybe_dry_run "Would systemctl enable --now earlyoom"; then
+            :
         else
-            print_warning "Failed to enable/start earlyoom; check with: sudo systemctl status earlyoom"
+            if sudo systemctl enable --now earlyoom >/dev/null 2>&1; then
+                print_success "earlyoom is active and protecting against OOM freezes"
+            else
+                print_warning "Failed to enable/start earlyoom; check with: sudo systemctl status earlyoom"
+            fi
         fi
     else
         print_warning "Systemd not detected; you may need to start earlyoom manually."
@@ -397,14 +568,26 @@ EOF
 configure_sysctl() {
     print_step "[4/${TOTAL_STEPS}] Applying kernel (sysctl) responsiveness tweaks"
 
+    if [ "$ENABLE_SYSCTL" -ne 1 ]; then
+        print_warning "Sysctl tweaks skipped by configuration."
+        return
+    fi
+
     local sysctl_file="/etc/sysctl.d/99-system-resource-protection.conf"
 
     if sudo test -f "$sysctl_file" 2>/dev/null && ! sudo grep -q "system_resource_protection_script" "$sysctl_file" 2>/dev/null; then
-        print_info "Backing up existing $sysctl_file to ${sysctl_file}.srps-backup"
-        sudo cp "$sysctl_file" "${sysctl_file}.srps-backup"
+        if maybe_dry_run "Would back up $sysctl_file to ${sysctl_file}.srps-backup"; then
+            :
+        else
+            print_info "Backing up existing $sysctl_file to ${sysctl_file}.srps-backup"
+            sudo cp "$sysctl_file" "${sysctl_file}.srps-backup"
+        fi
     fi
 
-    sudo tee "$sysctl_file" >/dev/null << 'EOF'
+    if maybe_dry_run "Would write $sysctl_file"; then
+        :
+    else
+        sudo tee "$sysctl_file" >/dev/null << 'EOF'
 # Generated by system_resource_protection_script
 # Better desktop / dev-box responsiveness under high load
 
@@ -425,17 +608,27 @@ net.ipv4.tcp_congestion_control = bbr
 # Allow many memory mappings (large codebases, containers, etc.)
 vm.max_map_count = 2147483642
 EOF
+    fi
 
-    if sudo sysctl -p "$sysctl_file" >/dev/null 2>&1; then
-        print_success "Sysctl parameters applied"
+    if maybe_dry_run "Would apply sysctl -p $sysctl_file"; then
+        :
     else
-        print_warning "sysctl -p returned an error; some tunables may be unsupported by your kernel."
+        if sudo sysctl -p "$sysctl_file" >/dev/null 2>&1; then
+            print_success "Sysctl parameters applied"
+        else
+            print_warning "sysctl -p returned an error; some tunables may be unsupported by your kernel."
+        fi
     fi
 }
 
 # --------------- Step 5: WSL2 / systemd Limits ---------------
 configure_wsl_limits() {
     print_step "[5/${TOTAL_STEPS}] Configuring WSL2/systemd default limits (if applicable)"
+
+    if [ "$ENABLE_WSL_LIMITS" -ne 1 ]; then
+        print_warning "WSL/systemd limits skipped by configuration."
+        return
+    fi
 
     if [ "$HAS_SYSTEMD" -ne 1 ]; then
         print_warning "No systemd detected; skipping system.conf.d limits."
@@ -451,14 +644,25 @@ configure_wsl_limits() {
     local conf_dir="/etc/systemd/system.conf.d"
     local conf_file="${conf_dir}/10-system-resource-protection.conf"
 
-    sudo mkdir -p "$conf_dir"
-
-    if sudo test -f "$conf_file" 2>/dev/null && ! sudo grep -q "system_resource_protection_script" "$conf_file" 2>/dev/null; then
-        print_info "Backing up existing $conf_file to ${conf_file}.srps-backup"
-        sudo cp "$conf_file" "${conf_file}.srps-backup"
+    if maybe_dry_run "Would ensure $conf_dir"; then
+        :
+    else
+        sudo mkdir -p "$conf_dir"
     fi
 
-    sudo tee "$conf_file" >/dev/null << 'EOF'
+    if sudo test -f "$conf_file" 2>/dev/null && ! sudo grep -q "system_resource_protection_script" "$conf_file" 2>/dev/null; then
+        if maybe_dry_run "Would back up $conf_file to ${conf_file}.srps-backup"; then
+            :
+        else
+            print_info "Backing up existing $conf_file to ${conf_file}.srps-backup"
+            sudo cp "$conf_file" "${conf_file}.srps-backup"
+        fi
+    fi
+
+    if maybe_dry_run "Would write $conf_file"; then
+        :
+    else
+        sudo tee "$conf_file" >/dev/null << 'EOF'
 # Generated by system_resource_protection_script
 [Manager]
 DefaultCPUAccounting=yes
@@ -467,14 +671,29 @@ DefaultTasksAccounting=yes
 DefaultLimitNOFILE=1048576
 DefaultLimitNPROC=32768
 EOF
+    fi
 
-    sudo systemctl daemon-reload
-    print_success "Systemd manager limits configured (effective after next boot of PID 1)"
+    if maybe_dry_run "Would systemctl daemon-reload"; then
+        :
+    else
+        sudo systemctl daemon-reload
+        print_success "Systemd manager limits configured (effective after next boot of PID 1)"
+    fi
 }
 
 # --------------- Step 6: Monitoring & Utilities --------------
 create_monitoring_and_tools() {
     print_step "[6/${TOTAL_STEPS}] Creating monitoring tools and helpers"
+
+    if [ "$ENABLE_TOOLS" -ne 1 ]; then
+        print_warning "Monitoring tools skipped by configuration."
+        return
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        print_info "[plan mode] Would install sysmon, check-throttled, cursor-guard, kill-cursor, srps-doctor, srps-reload-rules, srps-pull-rules, srps-report"
+        return
+    fi
 
     # --- sysmon ------------------------------------------------
     local sysmon="/usr/local/bin/sysmon"
@@ -489,14 +708,14 @@ create_monitoring_and_tools() {
 # Generated by system_resource_protection_script
 watch -n 1 -c '
 printf "\033[1;36m=== System Resource Monitor (SRPS) ===\033[0m\n\n"
-printf "\033[1;33mLoad averages:\033[0m %s\n" "$(uptime | awk -F\"load average:\" \"{print \$2}\")"
-printf "\033[1;33mMemory:\033[0m %s\n\n" "$(free -h | awk \"/Mem/ {printf \\\"%s/%s (%.0f%%)\\\", \$3, \$2, \$3/\$2*100}\")"
+printf "\033[1;33mLoad averages:\033[0m %s\n" "$(uptime | awk -F"load average:" "{print \\$2}")"
+printf "\033[1;33mMemory:\033[0m %s\n\n" "$(free -h | awk "/Mem/ {printf \\\"%s/%s (%.0f%%)\\\", \\$3, \\$2, \\$3/\\$2*100}")"
 
 printf "\033[1;31m=== Top CPU Hogs ===\033[0m\n"
-ps aux | sort -nrk 3,3 | head -5 | awk "{printf \\\"%-20s %5s%% NI:%3s MEM:%5s%%\\n\\\", substr(\$11,1,20), \$3, \$18, \$4}"
+ps aux | sort -nrk 3,3 | head -5 | awk "{printf \\\"%-20s %5s%% NI:%3s MEM:%5s%%\\\\n\\\", substr(\\$11,1,20), \\$3, \\$18, \\$4}"
 
-printf \"\n\033[1;32m=== Throttled (positive nice) processes ===\033[0m\n\"
-ps -eo pid,ni,comm,%cpu,%mem --sort=-ni | awk \"\$2 > 0 {printf \\\"%-7s NI:%3s CPU:%5s%% MEM:%5s%% %s\\n\\\", \$1, \$2, \$4, \$5, \$3}\" | head -20
+printf "\n\033[1;32m=== Throttled (positive nice) processes ===\033[0m\n"
+ps -eo pid,ni,comm,%cpu,%mem --sort=-ni | awk "\\$2 > 0 {printf \\\"%-7s NI:%3s CPU:%5s%% MEM:%5s%% %s\\\\n\\\", \\$1, \\$2, \\$4, \\$5, \\$3}" | head -20
 '
 EOF
     sudo chmod +x "$sysmon"
@@ -582,9 +801,182 @@ echo -e "\033[1;32mDone. Cursor-related processes terminated (as far as pkill ca
 EOF
     sudo chmod +x "$kill_cursor"
 
-    print_success "Monitoring and helper tools installed (sysmon, check-throttled, cursor-guard, kill-cursor)"
-}
+    # --- srps-doctor -----------------------------------------
+    local srps_doctor="/usr/local/bin/srps-doctor"
+    sudo tee "$srps_doctor" >/dev/null << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
 
+color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
+section() { echo -e "\n$(color "1;34" "==>") $*"; }
+
+section "sudo freshness"
+if sudo -n true 2>/dev/null; then
+  echo "sudo: ok (cached or passwordless)"
+else
+  echo "sudo: needs password (run sudo -v)"
+fi
+
+section "conflicts & services"
+if systemctl is-active --quiet systemd-oomd.service 2>/dev/null; then
+  echo "⚠ systemd-oomd active (can overlap with EarlyOOM)"
+else
+  echo "systemd-oomd: inactive"
+fi
+if systemctl is-active --quiet gamemoded.service 2>/dev/null; then
+  echo "⚠ gamemoded active (may conflict with ananicy-cpp)"
+else
+  echo "gamemoded: inactive"
+fi
+if systemctl is-active --quiet ananicy-cpp 2>/dev/null; then
+  echo "ananicy-cpp: active"
+else
+  echo "ananicy-cpp: inactive"
+fi
+if systemctl is-active --quiet earlyoom 2>/dev/null; then
+  echo "earlyoom: active"
+else
+  echo "earlyoom: inactive"
+fi
+
+section "systemd user session"
+if systemctl --user show-environment >/dev/null 2>&1; then
+  echo "systemd --user: available"
+else
+  echo "⚠ systemd --user not reachable (limited* aliases may fail)"
+fi
+
+section "config files"
+if [ -f /etc/default/earlyoom ]; then echo "earlyoom config present"; else echo "⚠ /etc/default/earlyoom missing"; fi
+if [ -f /etc/ananicy.d/00-default/99-system-resource-protection.rules ]; then echo "SRPS ananicy rules present"; else echo "⚠ SRPS ananicy rules missing"; fi
+if [ -f /etc/sysctl.d/99-system-resource-protection.conf ]; then echo "sysctl config present"; else echo "sysctl config missing"; fi
+
+section "permissions & groups"
+if stat -c "%a" /etc 2>/dev/null | grep -qE '^[0-7]6[0-7]'; then
+  echo "⚠ /etc has group/world write bits; tighten permissions"
+else
+  echo "/etc perms: ok"
+fi
+if id -nG "$USER" | grep -qw docker; then
+  echo "⚠ user in docker group (container cgroups can behave differently)"
+else
+  echo "docker group: not a member"
+fi
+
+section "recent errors"
+journalctl -p err -b -n 20 --no-pager 2>/dev/null || true
+
+section "recommendations"
+echo "- Disable one of systemd-oomd/earlyoom if both active"
+echo "- Disable gamemoded if scheduling conflicts appear"
+echo "- Ensure systemd user session is running for limited* aliases"
+EOF
+    sudo chmod +x "$srps_doctor"
+
+    # --- srps-reload-rules -----------------------------------
+    local srps_reload="/usr/local/bin/srps-reload-rules"
+    sudo tee "$srps_reload" >/dev/null << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Reloading ananicy-cpp rules..."
+if [ ! -d /etc/ananicy.d ]; then
+  echo "No /etc/ananicy.d found" >&2
+  exit 1
+fi
+if command -v ananicy-cpp >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl daemon-reload
+  sudo systemctl restart ananicy-cpp
+  sleep 2
+  count=$(sudo journalctl -u ananicy-cpp -n 20 --no-pager 2>/dev/null | grep -oP 'Worker initialized with \K[0-9]+' | head -1 || echo '?')
+  echo "ananicy-cpp restarted; rules loaded: ${count}"
+else
+  echo "ananicy-cpp/systemctl not available" >&2
+  exit 1
+fi
+EOF
+    sudo chmod +x "$srps_reload"
+
+    # --- srps-pull-rules -------------------------------------
+    if [ "$ENABLE_RULE_PULL" -eq 1 ]; then
+        local srps_pull="/usr/local/bin/srps-pull-rules"
+        sudo tee "$srps_pull" >/dev/null << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+tmpdir=$(mktemp -d)
+trap 'rm -rf "$tmpdir"' EXIT
+echo "Fetching latest CachyOS ananicy rules..."
+git clone -q --depth 1 https://github.com/CachyOS/ananicy-rules.git "$tmpdir/ananicy-rules"
+backup="/etc/ananicy.d.backup-$(date +%Y%m%d-%H%M%S)-pull"
+sudo cp -a /etc/ananicy.d "$backup" || true
+sudo rm -rf /etc/ananicy.d
+sudo mkdir -p /etc/ananicy.d
+sudo cp -a "$tmpdir/ananicy-rules"/* /etc/ananicy.d/
+if [ -d "$backup/10-local" ]; then
+  sudo cp -a "$backup/10-local" /etc/ananicy.d/ || true
+fi
+echo "Rules refreshed. Backup at $backup"
+EOF
+        sudo chmod +x "$srps_pull"
+    fi
+
+        # --- srps-report (HTML snapshot) -------------------------
+    if [ "$ENABLE_HTML_REPORT" -eq 1 ]; then
+        local srps_report="/usr/local/bin/srps-report"
+        sudo tee "$srps_report" >/dev/null << 'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+out="/tmp/srps-report.html"
+load=$(uptime)
+mem=$(free -h)
+topcpu=$(ps aux --sort=-%cpu | head -5)
+topmem=$(ps aux --sort=-%mem | head -5)
+status=$(systemctl is-active ananicy-cpp 2>/dev/null || true)
+status2=$(systemctl is-active earlyoom 2>/dev/null || true)
+cat > "$out" <<'HTML'
+<html><head><meta charset="utf-8"><title>SRPS Snapshot</title></head><body>
+<h1>SRPS Snapshot</h1>
+<h2>System</h2><pre>$load</pre>
+<h2>Memory</h2><pre>$mem</pre>
+<h2>Services</h2><pre>ananicy-cpp: $status
+earlyoom: $status2</pre>
+<h2>Top CPU</h2><pre>$topcpu</pre>
+<h2>Top MEM</h2><pre>$topmem</pre>
+</body></html>
+HTML
+echo "Wrote $out"
+EOF
+        sudo chmod +x "$srps_report"
+    fi
+
+    # --- bash completion --------------------------------------
+    local completion_file="/etc/bash_completion.d/srps"
+    sudo tee "$completion_file" >/dev/null << 'EOF'
+_srps_install_complete() {
+  local cur
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  COMPREPLY=( $(compgen -W "--install --uninstall --plan -y --yes" -- "$cur") )
+}
+complete -F _srps_install_complete install.sh
+complete -W "srps-doctor srps-reload-rules srps-pull-rules srps-report sysmon check-throttled cursor-guard kill-cursor" srps-doctor srps-reload-rules srps-pull-rules srps-report sysmon check-throttled cursor-guard kill-cursor
+EOF
+
+    print_info "Bash completions installed at $completion_file"
+
+    # --- WSL helper note -------------------------------------
+    if [ "$IS_WSL" -eq 1 ]; then
+        local wsl_helper="/usr/local/share/srps-wsl-earlyoom.ps1"
+        sudo tee "$wsl_helper" >/dev/null << 'EOF'
+# Run from an elevated PowerShell prompt to kick earlyoom inside WSL
+$distro = wsl.exe -l -q | Select-Object -First 1
+$cmd = "wsl.exe -d $distro sh -c 'sudo systemctl start earlyoom'"
+Start-Process -WindowStyle Hidden -Verb RunAs -FilePath powershell -ArgumentList $cmd
+EOF
+        print_info "WSL PowerShell helper written to $wsl_helper (run elevated in Windows to start earlyoom)"
+    fi
+
+    print_success "Monitoring and helper tools installed (sysmon, check-throttled, cursor-guard, kill-cursor, srps-doctor, srps-reload-rules${ENABLE_RULE_PULL:+, srps-pull-rules}${ENABLE_HTML_REPORT:+, srps-report})"
+}
 # --------------- Shell Aliases / Environment -----------------
 detect_shell_rc() {
     if [ -n "${ZDOTDIR:-}" ] && [ -f "${ZDOTDIR}/.zshrc" ]; then
@@ -599,6 +991,11 @@ detect_shell_rc() {
 }
 
 configure_shell_aliases() {
+    if [ "$ENABLE_SHELL_ALIASES" -ne 1 ]; then
+        print_warning "Shell alias configuration skipped by configuration."
+        return
+    fi
+
     detect_shell_rc
     print_info "Using shell rc file: $SHELL_RC"
 
@@ -610,20 +1007,37 @@ configure_shell_aliases() {
         return
     fi
 
+    if command -v systemd-run >/dev/null 2>&1; then
+        if command -v systemctl >/dev/null 2>&1 && ! systemctl --user show-environment >/dev/null 2>&1; then
+            print_warning "systemd-run is available but the user systemd instance looks inactive; 'limited*' aliases may show bus errors until a user systemd session is running (e.g., login via a systemd-managed session or enable lingering)."
+        fi
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        print_info "[plan mode] Would append SRPS aliases to $SHELL_RC"
+        return
+    fi
+
     print_info "Adding resource-limited helpers and aliases to $SHELL_RC"
     cat >> "$SHELL_RC" << 'EOF'
 
 # >>> system_resource_protection_script >>>
-# Resource-limited command runners using systemd user scopes
-alias limited="systemd-run --user --scope -p CPUQuota=50% --"
-alias limited-mem="systemd-run --user --scope -p MemoryMax=8G --"
-alias cargo-limited="systemd-run --user --scope -p CPUQuota=75% -p MemoryMax=50G cargo"
-alias make-limited="systemd-run --user --scope -p CPUQuota=75% make -j$(nproc)"
-alias node-limited="systemd-run --user --scope -p CPUQuota=75% -p MemoryMax=8G node"
+# Resource-limited command runners using systemd user scopes (if available)
+if command -v systemd-run >/dev/null 2>&1; then
+  alias limited="systemd-run --user --scope -p CPUQuota=50% --"
+  alias limited-mem="systemd-run --user --scope -p MemoryMax=8G --"
+  alias cargo-limited="systemd-run --user --scope -p CPUQuota=75% -p MemoryMax=50G cargo"
+  alias make-limited="systemd-run --user --scope -p CPUQuota=75% make -j$(nproc)"
+  alias node-limited="systemd-run --user --scope -p CPUQuota=75% -p MemoryMax=8G node"
+fi
 
-# Monitoring helpers
-alias sys='sysmon'
-alias throttled='check-throttled'
+# Monitoring helpers (only if helpers are available)
+if command -v sysmon >/dev/null 2>&1; then
+  alias sys='sysmon'
+fi
+if command -v check-throttled >/dev/null 2>&1; then
+  alias throttled='check-throttled'
+fi
 
 # Rust / Cargo env
 export TMPDIR=/tmp
@@ -683,6 +1097,18 @@ show_final_summary_install() {
     echo -e "  Run ${CYAN}source \"$SHELL_RC\"${NC} or open a new shell to use the new aliases.\n"
 }
 
+sample_service_logs() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        return
+    fi
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        print_info "Recent ananicy-cpp log tail:"
+        sudo journalctl -u ananicy-cpp -n 10 --no-pager 2>/dev/null || true
+        print_info "Recent earlyoom log tail:"
+        sudo journalctl -u earlyoom -n 10 --no-pager 2>/dev/null || true
+    fi
+}
+
 # --------------- Uninstall Logic -----------------------------
 uninstall_shell_snippets() {
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
@@ -697,7 +1123,7 @@ uninstall_shell_snippets() {
 uninstall_monitoring_tools() {
     print_step "[1/4] Removing monitoring and helper utilities"
 
-    for bin in /usr/local/bin/sysmon /usr/local/bin/check-throttled /usr/local/bin/cursor-guard /usr/local/bin/kill-cursor; do
+    for bin in /usr/local/bin/sysmon /usr/local/bin/check-throttled /usr/local/bin/cursor-guard /usr/local/bin/kill-cursor /usr/local/bin/srps-doctor /usr/local/bin/srps-reload-rules /usr/local/bin/srps-pull-rules /usr/local/bin/srps-report; do
         if sudo test -f "$bin" 2>/dev/null; then
             if sudo grep -q "system_resource_protection_script" "$bin" 2>/dev/null; then
                 print_info "Removing $bin"
@@ -714,6 +1140,16 @@ uninstall_monitoring_tools() {
             print_success "Restored ${bin} from backup"
         fi
     done
+
+    if sudo test -f /etc/bash_completion.d/srps 2>/dev/null; then
+        print_info "Removing bash completion file /etc/bash_completion.d/srps"
+        sudo rm -f /etc/bash_completion.d/srps
+    fi
+
+    if sudo test -f /usr/local/share/srps-wsl-earlyoom.ps1 2>/dev/null; then
+        print_info "Removing WSL helper script /usr/local/share/srps-wsl-earlyoom.ps1"
+        sudo rm -f /usr/local/share/srps-wsl-earlyoom.ps1
+    fi
 }
 
 uninstall_ananicy_config() {
@@ -826,11 +1262,21 @@ show_final_summary_uninstall() {
 # --------------- Main Flows ----------------------------------
 main_install() {
     print_banner "install"
+    load_config
     detect_system
+    detect_power_profile
 
     print_info "Environment:"
-    echo -e "  Systemd:  ${HAS_SYSTEMD:+yes}${HAS_SYSTEMD:-no}"
-    echo -e "  WSL:      ${IS_WSL:+yes}${IS_WSL:-no}"
+    local systemd_str="no" wsl_str="no"
+    if [ "$HAS_SYSTEMD" -eq 1 ]; then
+        systemd_str="yes"
+    fi
+    if [ "$IS_WSL" -eq 1 ]; then
+        wsl_str="yes"
+    fi
+
+    echo -e "  Systemd:  $systemd_str"
+    echo -e "  WSL:      $wsl_str"
     echo -e "  Package:  apt-get\n"
 
     install_ananicy_cpp
@@ -840,11 +1286,13 @@ main_install() {
     configure_wsl_limits
     create_monitoring_and_tools
     configure_shell_aliases
+    sample_service_logs
     show_final_summary_install
 }
 
 main_uninstall() {
     print_banner "uninstall"
+    load_config
     detect_system
 
     if [ "$FORCE" != "yes" ] && [ -t 0 ]; then
@@ -865,7 +1313,7 @@ main_uninstall() {
 }
 
 # --------------- Entry Point ---------------------------------
-if [ "$ACTION" = "install" ]; then
+if [ "$ACTION" = "install" ] || [ "$ACTION" = "plan" ]; then
     main_install
 else
     main_uninstall

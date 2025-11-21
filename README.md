@@ -55,6 +55,12 @@ This repo contains a **single, self-contained shell script** that intelligently 
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash
 ```
 
+**Preview without changes:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_protection_script/main/install.sh | bash -s -- --plan
+```
+
 #### What Happens During Install
 
 The script performs **6 steps**:
@@ -103,10 +109,18 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/system_resource_p
 | **systemd** | Recommended for services and `systemd-run` aliases | ⚠️ Optional* |
 | **sudo** | Configured for your user | ✅ Required |
 | **apt-get** | Package manager | ✅ Required |
+| **bash** | POSIX shell; bash completions installed if available | ✅ Required |
 
 > ⚠️ **Important:** The script **must** be run as a regular user with sudo — **not** as root.
 
 \* *The script will still run without systemd, but some features will be skipped.*
+
+### ⚙️ Configuration & Feature Flags
+
+- Optional config file: `./srps.conf` (next to script) **or** `/etc/system-resource-protection.conf`.
+- Toggle modules (1=enable, 0=disable): `ENABLE_ANANICY`, `ENABLE_EARLYOOM`, `ENABLE_SYSCTL`, `ENABLE_WSL_LIMITS`, `ENABLE_TOOLS`, `ENABLE_SHELL_ALIASES`, `ENABLE_RULE_PULL`, `ENABLE_HTML_REPORT`.
+- Override EarlyOOM: `SRPS_EARLYOOM_ARGS="..."` (single line; safely escaped on write).
+- Plan-only mode: `install.sh --plan` or `DRY_RUN=1` to preview without making changes.
 
 ---
 
@@ -133,6 +147,9 @@ If `ananicy-cpp` is not found in `$PATH`, SRPS will:
 - `/etc/ananicy.d` is recreated and populated with:
   - Community rules from [`CachyOS/ananicy-rules`](https://github.com/CachyOS/ananicy-rules) (best effort)
   - SRPS custom rules: `/etc/ananicy.d/00-default/99-system-resource-protection.rules`
+
+**Notes:**
+- If `gamemoded.service` is active, it also renices/adjusts processes. Running both GameMode and ananicy-cpp can cause competing tweaks; disable one if you notice odd scheduling behavior.
 
 #### Custom Rule Highlights
 
@@ -224,13 +241,45 @@ If `earlyoom` is missing, SRPS installs it via `apt-get`.
 
 **Backups:** Existing file backed up to `/etc/default/earlyoom.srps-backup` if it doesn't look SRPS-owned.
 
-**SRPS Configuration:**
+**SRPS Configuration (default):**
 
 ```bash
 EARLYOOM_ARGS="-r 300 -m 2 -s 5 \
-  --avoid '^(Xorg|gnome-shell|systemd|sshd|sway|wayland|code|vscode)$' \
-  --prefer '^(chrome|chromium|firefox|brave|cargo|rustc|node|npm|yarn|pnpm|java|python3?|jupyter.*|cursor|slack|discord)$'"
+  --avoid 'Xorg|gnome-shell|systemd|sshd|sway|wayland|plasmashell|kwin_x11|kwin_wayland|code|vscode' \
+  --prefer 'chrome|chromium|firefox|brave|msedge|cargo|rustc|node|npm|yarn|pnpm|java|python3?|jupyter.*|cursor|slack|discord|teams|zoom' \
+  --ignore-root-user -p"
 ```
+
+**Laptop/battery-aware defaults:** When on battery, SRPS tightens thresholds slightly to `-m 4 -s 8` (same avoid/prefer sets).
+
+You can **override this at install time** without editing the script:
+
+```bash
+SRPS_EARLYOOM_ARGS="-m 4 -s 10 --prefer 'chrome|node' --avoid 'Xorg|gnome-shell'" \
+  bash install.sh
+```
+
+**Notes:**
+- If `systemd-oomd.service` is active, its OOM handling can overlap with EarlyOOM; consider disabling one if you see double-kill behaviour.
+- EarlyOOM arguments are written safely escaped; if you override via `SRPS_EARLYOOM_ARGS`, keep it on one line.
+
+### 🚀 New Helpers & Modes
+
+- `install.sh --plan` (dry-run) shows what would change without writing.
+- `srps-doctor` checks sudo, conflicts (systemd-oomd/gamemoded), config presence, and recent errors.
+- `srps-reload-rules` restarts ananicy-cpp and reports loaded rule count.
+- `srps-pull-rules` refreshes community rules (keeps `/etc/ananicy.d/10-local` if present).
+- `srps-report` writes `/tmp/srps-report.html` snapshot (services, load, memory, top CPU/MEM).
+- Bash completion installed at `/etc/bash_completion.d/srps` for flags and helper commands.
+- `srps-wsl-earlyoom.ps1` (Windows-side helper) starts EarlyOOM inside WSL from an elevated PowerShell session if systemd user services aren’t running.
+
+### ⚙️ Configuration File & Toggles
+
+- Optional config file: place `srps.conf` next to the script **or** `/etc/system-resource-protection.conf`.
+- Toggle features by setting env vars or entries in the config file (1=enable, 0=disable):
+  - `ENABLE_ANANICY`, `ENABLE_EARLYOOM`, `ENABLE_SYSCTL`, `ENABLE_WSL_LIMITS`, `ENABLE_TOOLS`, `ENABLE_SHELL_ALIASES`, `ENABLE_HTML_REPORT`, `ENABLE_RULE_PULL`.
+- `SRPS_EARLYOOM_ARGS` can override EarlyOOM args; if blank/invalid, SRPS falls back to defaults.
+- `DRY_RUN=1` is implied by `--plan`; no system changes are made.
 
 **Parameters Explained:**
 
@@ -313,6 +362,7 @@ DefaultLimitNPROC=32768        # Process limit
 - ✅ Enables per-unit CPU / memory / task accounting by default
 - ✅ Raises default limits for file descriptors and processes
 - ✅ **Especially helpful in WSL2** where resource defaults can be surprisingly low
+- 💡 WSL helper: `srps-wsl-earlyoom.ps1` (installed to `/usr/local/share`) can be run from elevated PowerShell to start EarlyOOM inside WSL if systemd user services aren’t active.
 
 > ⚠️ **Important:** Changes take effect on the next boot of PID 1 (i.e., next full system or WSL systemd session restart).
 
@@ -322,7 +372,7 @@ DefaultLimitNPROC=32768        # Process limit
 
 ### 5️⃣ Monitoring Tools & Guards
 
-SRPS installs **four helper utilities** into `/usr/local/bin`:
+SRPS installs helper utilities into `/usr/local/bin`:
 
 #### 📊 `sysmon`
 
@@ -394,6 +444,22 @@ kill-cursor
 
 > ⚠️ **Uninstall:** SRPS removes only its own versions of these scripts and restores any `.srps-backup` copies if they existed before.
 
+#### 🩺 `srps-doctor`
+
+- Checks sudo freshness, detects conflicts (`systemd-oomd`, `gamemoded`), shows service status, config presence, `/etc` perms, docker group membership, and last 20 error logs.
+
+#### 🔄 `srps-reload-rules`
+
+- Validates `/etc/ananicy.d`, restarts `ananicy-cpp`, and reports the loaded rule count from journal.
+
+#### 🌐 `srps-pull-rules`
+
+- (Optional; enabled by default) Fetches latest CachyOS rules, backs up `/etc/ananicy.d`, reapplies community rules, and restores `/etc/ananicy.d/10-local` if present.
+
+#### 📊 `srps-report`
+
+- Generates `/tmp/srps-report.html` snapshot with service status, load, memory, and top CPU/MEM processes (no daemon; one-shot).
+
 ---
 
 ### 6️⃣ Aliases & Environment
@@ -421,6 +487,7 @@ limited-mem      # Run any command with 8G memory cap
 cargo-limited    # Run cargo with 75% CPU + 50G memory limits
 make-limited     # Run make with 75% CPU limit
 node-limited     # Run node with 75% CPU + 8G memory limits
+* Aliases only defined when `systemd-run` is available and systemd user session is reachable.
 ```
 
 #### Monitoring Shortcuts
@@ -428,6 +495,7 @@ node-limited     # Run node with 75% CPU + 8G memory limits
 ```bash
 sys        # Alias for sysmon
 throttled  # Alias for check-throttled
+* Only defined if the helper exists in PATH.
 ```
 
 #### Environment Variables
@@ -569,6 +637,7 @@ The script is intentionally conservative, but tuning is always workload-dependen
 | `/etc/default/earlyoom` | `/etc/default/earlyoom.srps-backup` |
 | `/etc/sysctl.d/99-system-resource-protection.conf` | `*.srps-backup` |
 | `/etc/systemd/system.conf.d/10-system-resource-protection.conf` | `*.srps-backup` |
+| `/etc/system-resource-protection.conf` (optional user config) | *User-managed (no automatic backup)* |
 
 ### 🔧 Binary / Helper Scripts
 
@@ -578,6 +647,12 @@ The script is intentionally conservative, but tuning is always workload-dependen
 | `check-throttled` | `/usr/local/bin/check-throttled` |
 | `cursor-guard` | `/usr/local/bin/cursor-guard` |
 | `kill-cursor` | `/usr/local/bin/kill-cursor` |
+| `srps-doctor` | `/usr/local/bin/srps-doctor` |
+| `srps-reload-rules` | `/usr/local/bin/srps-reload-rules` |
+| `srps-pull-rules` | `/usr/local/bin/srps-pull-rules` |
+| `srps-report` | `/usr/local/bin/srps-report` |
+| `srps-wsl-earlyoom.ps1` | `/usr/local/share/srps-wsl-earlyoom.ps1` |
+| Bash completion | `/etc/bash_completion.d/srps` |
 
 ### 🐚 Shell Configuration
 
@@ -587,4 +662,3 @@ The script is intentionally conservative, but tuning is always workload-dependen
 | `~/.bashrc` | Fallback if zsh not detected |
 
 > ✅ **All SRPS-owned things are either clearly marked or backed up**, so you can reason about and audit changes quickly.
-
