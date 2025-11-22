@@ -17,7 +17,28 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
 
       - name: Shellcheck
-        run: shellcheck install.sh
+        run: shellcheck install.sh verify.sh
 
       - name: Dry-run install plan (no changes)
         run: bash install.sh --plan
+
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v23.11
+
+      - name: nix flake check
+        run: nix flake check
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build toolbox image
+        run: docker build -t srps-ci .
