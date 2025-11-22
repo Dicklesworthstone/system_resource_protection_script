@@ -110,6 +110,8 @@ srps-verify latest
 srps-install --plan
 ```
 
+> Note: the formula tracks the current `main` tarball. A tagged release tap will be added when the next stable release is cut.
+
 ### Nix / Flakes
 
 ```bash
@@ -132,6 +134,8 @@ docker run --rm -it srps-tools              # defaults to --plan
 ```bash
 docker run --rm -it --privileged -v /:/host srps-tools --plan
 ```
+
+> GHCR image publishing is not automated yet; build locally or publish manually until a registry workflow is added.
 
 ---
 
