@@ -1,0 +1,15 @@
+# Beads runtime artifacts
+.beads/beads.db
+.beads/daemon.lock
+.beads/daemon.log
+.beads/*.left.jsonl
+.beads/*.left.meta.json
+
+# Go build cache/output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+**/vendor/
