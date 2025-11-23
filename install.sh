@@ -381,8 +381,7 @@ configure_ananicy_rules() {
         sudo rm -rf /etc/ananicy.d/.git /etc/ananicy.d/.github /etc/ananicy.d/.gitignore
         # Ensure strict root ownership (cp -a from user tmp might preserve user owner)
         sudo chown -R root:root /etc/ananicy.d
-        # Quiet harmless existing-cgroup warnings by raising loglevel to error
-        sudo perl -pi -e 's/^loglevel\\s*=.*/loglevel = error/' /etc/ananicy.d/ananicy.conf 2>/dev/null || true
+        # Keep upstream default loglevel, but we will filter noisy cgroup warnings in srps-doctor
         rm -rf "$tmp_rules_dir"
     else
         # Ensure minimal structure if fetch failed
@@ -1264,11 +1263,17 @@ if [ "${SRPS_JSON:-0}" = "1" ]; then
   j_file(){ [ -f "$1" ] && echo true || echo false; }
   an_errs="[]"
   if command -v journalctl >/dev/null 2>&1; then
-    mapfile -t ERR_LINES < <(journalctl -u ananicy-cpp -n 50 --no-pager 2>/dev/null | grep -i -E 'error|invalid' | head -5)
-    if [ ${#ERR_LINES[@]} -gt 0 ]; then
+    mapfile -t ERR_LINES < <(journalctl -u ananicy-cpp -n 80 --no-pager 2>/dev/null | grep -i -E 'error|invalid|mismatch' | head -5)
+    # Filter out benign cgroup-exists warnings, keep others
+    filtered=()
+    for line in "${ERR_LINES[@]}"; do
+      echo "$line" | grep -qi "cgroup .* already exists" && continue
+      filtered+=("$line")
+    done
+    if [ ${#filtered[@]} -gt 0 ]; then
       an_errs="["
       first=1
-      for line in "${ERR_LINES[@]}"; do
+      for line in "${filtered[@]}"; do
         esc=$(printf '%s' "$line" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')
         [ $first -eq 1 ] || an_errs+=","
         an_errs+="\"$esc\""
@@ -1337,12 +1342,8 @@ if [ -f /etc/sysctl.d/99-system-resource-protection.conf ]; then echo "sysctl co
 
 section "ananicy recent errors (last 50 lines)"
 if command -v journalctl >/dev/null 2>&1; then
-  errs=$(journalctl -u ananicy-cpp -n 50 --no-pager 2>/dev/null | grep -i -E 'error|invalid' | head -5)
-  if [ -z "$errs" ]; then
-    echo "none seen"
-  else
-    echo "$errs"
-  fi
+  errs=$(journalctl -u ananicy-cpp -n 80 --no-pager 2>/dev/null | grep -i -E 'error|invalid|mismatch' | grep -vi 'cgroup .* already exists' | head -5)
+  if [ -z "$errs" ]; then echo "none seen"; else echo "$errs"; fi
 else
   echo "journalctl not available"
 fi
