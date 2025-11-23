@@ -48,6 +48,13 @@ echo "[smoke] sysmon JSON snapshot"
 SRPS_SYSMON_JSON=1 SRPS_SYSMON_INTERVAL=0.1 ./install.sh --plan >/tmp/srps-plan.log || true
 SRPS_SYSMON_JSON=1 SRPS_SYSMON_GPU=0 SRPS_SYSMON_BATT=0 SRPS_SYSMON_INTERVAL=0.1 "$tmpdir/sysmon" >/tmp/sysmon.json
 python3 -c "import json; json.load(open('/tmp/sysmon.json'))"
+python3 - <<'PY'
+import json, sys
+data = json.load(open('/tmp/sysmon.json'))
+assert isinstance(data.get("top"), list) and data["top"], "sysmon JSON top list empty"
+assert "cpu" in data and "mem" in data, "sysmon JSON missing cpu/mem keys"
+print("[check] sysmon JSON sanity OK")
+PY
 
 echo "[smoke] check-throttled JSON"
 SRPS_JSON=1 "$tmpdir/check-throttled" >/tmp/check-throttled.json
