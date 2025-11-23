@@ -770,8 +770,15 @@ Env flags:
   SRPS_SYSMON_JSON_STREAM    1=NDJSON stream each interval
   SRPS_SYSMON_JSON_FILE      Path to write JSON (overwrites; streams append)
   SRPS_SYSMON_ADAPTIVE       1=double interval when not on a TTY
+Flags:
+  --json                     Shortcut for SRPS_SYSMON_JSON=1 one-shot snapshot
 USAGE
   exit 0
+fi
+
+if [ "${1:-}" = "--json" ]; then
+  SRPS_SYSMON_JSON=1
+  shift || true
 fi
 
 interval=${SRPS_SYSMON_INTERVAL:-1}
@@ -793,6 +800,8 @@ declare -A cpu_accu max_mem max_cpu prev_core_total prev_core_idle prev_dev_r pr
 prev_net_rx=""; prev_net_tx=""; prev_disk_r=""; prev_disk_w=""; dev_metrics_json="[]"
 last_cpu_pct=0; mem_pct_last=0; start_ts=$(date +%s)
 peak_rd_mb=0; peak_wr_mb=0; peak_rx_mbps=0; peak_tx_mbps=0
+gpu_json="[]"; gpu_txt=""
+batt_json="null"; batt_txt=""
 
 # Colors
 if command -v tput >/dev/null 2>&1; then
@@ -808,6 +817,62 @@ bar(){
   if [ "$filled" -gt 0 ]; then printf '%0.s#' $(seq 1 "$filled"); fi
   if [ $((width-filled)) -gt 0 ]; then printf '%0.s-' $(seq 1 $((width-filled))); fi
   printf '] %3s%%' "$pct"
+}
+
+collect_battery(){
+  batt_json="null"; batt_txt=""
+  local pct state batt_dev batt_path
+  if command -v upower >/dev/null 2>&1; then
+    batt_dev=$(upower -e 2>/dev/null | grep -m1 BAT || true)
+    if [ -n "$batt_dev" ]; then
+      pct=$(upower -i "$batt_dev" 2>/dev/null | awk '/percentage/ {gsub("%",""); print $2; exit}')
+      state=$(upower -i "$batt_dev" 2>/dev/null | awk '/state/ {print $2; exit}')
+    fi
+  fi
+  if [ -z "${pct:-}" ] && ls /sys/class/power_supply/BAT* >/dev/null 2>&1; then
+    batt_path=$(ls /sys/class/power_supply/BAT* | head -1)
+    pct=$(cat "$batt_path/capacity" 2>/dev/null || true)
+    state=$(cat "$batt_path/status" 2>/dev/null || true)
+  fi
+  if [ -n "${pct:-}" ]; then
+    batt_txt=$(printf "Battery: %s%% (%s)" "$pct" "${state:-unknown}")
+    batt_json=$(printf '{"percent":%s,"state":"%s"}' "$pct" "${state:-unknown}")
+  fi
+}
+
+collect_gpu(){
+  gpu_json="[]"; gpu_txt=""
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    mapfile -t GPUS < <(nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | head -n 2)
+    local first=1 gtxt="" line idx name util mused mtotal temp mpct
+    for line in "${GPUS[@]}"; do
+      IFS=',' read -r idx name util mused mtotal temp <<<"$line"
+      util=${util//[[:space:]]/}; mused=${mused//[[:space:]]/}; mtotal=${mtotal//[[:space:]]/}; temp=${temp//[[:space:]]/}
+      mpct=$(awk -v u="$mused" -v t="$mtotal" 'BEGIN{if(t==0)print 0; else printf "%.0f", (u/t)*100}')
+      [ $first -eq 1 ] || gpu_json+=","
+      first=0
+      gpu_json+=$(printf '{"gpu":"%s","util":%s,"mem_used":%s,"mem_total":%s,"mem_pct":%s,"temp_c":%s}' "$name" "$util" "$mused" "$mtotal" "$mpct" "${temp:-0}")
+      gtxt+=$(printf "GPU%s %s%% mem:%s/%sMiB (%s%%) %sC  " "$idx" "$util" "$mused" "$mtotal" "$mpct" "${temp:-0}")
+    done
+    gpu_json="[$gpu_json]"; gpu_txt=$gtxt; return
+  fi
+
+  if command -v rocm-smi >/dev/null 2>&1; then
+    mapfile -t GPUS < <(rocm-smi --showuse --showtemp 2>/dev/null | grep -E 'GPU\[[0-9]+\]' | head -n 2)
+    local first=1 gtxt="" line idx util temp
+    for line in "${GPUS[@]}"; do
+      idx=$(echo "$line" | grep -oE 'GPU\[[0-9]+\]' | tr -dc '0-9')
+      util=$(echo "$line" | grep -oE 'GPU use: *[0-9]+' | awk '{print $3}')
+      temp=$(echo "$line" | grep -oE 'temp: *[0-9]+' | awk '{print $2}')
+      [ -z "$util" ] && util=0
+      [ -z "$temp" ] && temp=0
+      [ $first -eq 1 ] || gpu_json+=","
+      first=0
+      gpu_json+=$(printf '{"gpu":"AMD-%s","util":%s,"temp_c":%s}' "$idx" "$util" "$temp")
+      gtxt+=$(printf "GPU%s %s%% %sC  " "$idx" "$util" "$temp")
+    done
+    gpu_json="[$gpu_json]"; gpu_txt=$gtxt
+  fi
 }
 
 read_cpu_counters(){ read -r _ u n s i io irq si st _ < /proc/stat; echo $((i+io)) $((u+n+s+irq+si+st)); }
@@ -942,13 +1007,12 @@ while true; do
 
   if [ "$json_mode" != "1" ]; then
     clear 2>/dev/null || true
-    printf "%s%sSYSTEM RESOURCE MONITOR%s
-" "$(b)" "$(c 6)" "$(r)"
-    printf "%s%(%a %b %d %H:%M:%S %Z %Y)T%s
-" "$(b)" -1 "$(r)"
+    printf "%s%sSYSTEM RESOURCE MONITOR%s\n" "$(b)" "$(c 6)" "$(r)"
+    printf "%s%(%a %b %d %H:%M:%S %Z %Y)T%s\n" "$(b)" -1 "$(r)"
+    collect_battery; [ -n "$batt_txt" ] && printf "%s\n" "$batt_txt"
     disk_net_lines; print_io_net
-    cpu_line; mem_line; collect_cgroups; printf "
-"
+    collect_gpu; [ -n "$gpu_txt" ] && printf "%s\n\n" "$gpu_txt"
+    cpu_line; mem_line; collect_cgroups; printf "\n"
 
     if [ -n "$focus_re" ]; then
       focus_view=$(echo "$snapshot" | grep -E "$focus_re" || true)
@@ -970,7 +1034,7 @@ while true; do
 
     print_top_cpu; print_throttled; print_historical; print_per_core; print_cgroups; print_footer
   else
-    disk_net_lines; cpu_line; mem_line; collect_cgroups
+    disk_net_lines; cpu_line; mem_line; collect_cgroups; collect_gpu; collect_battery
   fi
 
   if [ "$json_mode" = "1" ]; then
@@ -1023,8 +1087,8 @@ while true; do
     nr_w=$(cat /proc/sys/fs/inotify/nr_watches 2>/dev/null || echo 0)
     inotify_json=$(printf '{"max_user_watches":%s,"max_user_instances":%s,"nr_watches":%s}' "$max_w" "$max_i" "$nr_w")
 
-    json_blob=$(printf '{"timestamp":%s,"cpu":%s,"mem":%s,"top":%s,"historical":%s,"per_core":%s,"io":%s,"temps":%s,"inotify":%s,"cgroups":%s}
-'       "$(date +%s)" "$last_cpu_pct" "$mem_pct_last" "$top_json" "$hist_json" "$percore_json" "$io_json" "$temps_json" "$inotify_json" "$cgroup_json")
+    json_blob=$(printf '{"timestamp":%s,"cpu":%s,"mem":%s,"top":%s,"historical":%s,"per_core":%s,"io":%s,"temps":%s,"inotify":%s,"cgroups":%s,"gpu":%s,"battery":%s}
+'       "$(date +%s)" "$last_cpu_pct" "$mem_pct_last" "$top_json" "$hist_json" "$percore_json" "$io_json" "$temps_json" "$inotify_json" "$cgroup_json" "$gpu_json" "$batt_json")
     if [ -n "$json_file" ]; then
       if [ "$json_stream" = "1" ]; then printf "%s" "$json_blob" >>"$json_file"; else printf "%s" "$json_blob" >"$json_file"; fi
     else
