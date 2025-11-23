@@ -1208,19 +1208,18 @@ EOF
     }
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        print_info "[plan mode] Would install sysmon-go binary (or build from source) to $sysmon_go and link $sysmon; fallback to bash sysmon if needed"
+        print_info "[plan mode] Would install sysmon-go binary (or build from source) to $sysmon_go and link $sysmon; no bash fallback in plan"
     else
         if install_sysmon_go "$ref"; then
             sudo ln -sf "$sysmon_go" "$sysmon"
             print_success "sysmon-go installed and linked to $sysmon"
         else
-            print_warning "sysmon-go unavailable (download/build failed); installing legacy bash sysmon"
-            install_bash_sysmon "$sysmon"
+            die "sysmon-go download/build failed (see logs above); aborting instead of falling back to legacy sysmon. Set ALLOW_BASH_SYSMON=1 if you explicitly want the old bash TUI."
         fi
     fi
 
-    # Ensure a sysmon exists as safety net (do not overwrite working sysmon-go)
-    if [ ! -x "$sysmon" ]; then
+    # Optional legacy fallback only when explicitly allowed
+    if [ ! -x "$sysmon" ] && [ "${ALLOW_BASH_SYSMON:-0}" = "1" ]; then
         install_bash_sysmon "$sysmon"
     fi
 
