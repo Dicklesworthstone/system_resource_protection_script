@@ -1173,7 +1173,16 @@ EOF
 
         # 2) Build from source tarball (needs Go)
         if ! command -v go >/dev/null 2>&1; then
-            return 1
+            if command -v apt-get >/dev/null 2>&1; then
+                print_info "Installing Go toolchain (apt) to build sysmon-go..."
+                if ! sudo apt-get update -qq || ! sudo apt-get install -y -qq golang-go; then
+                    print_warning "Failed to install Go toolchain; cannot build sysmon-go"
+                    return 1
+                fi
+            else
+                print_warning "Go toolchain missing and apt-get unavailable; cannot build sysmon-go"
+                return 1
+            fi
         fi
         local tmpdir srcdir tar_url
         tmpdir=$(mktemp -d)
@@ -1187,7 +1196,7 @@ EOF
         fi
         srcdir=$(find "$tmpdir" -maxdepth 1 -type d -name "system_resource_protection_script-*" | head -1)
         if [ -z "$srcdir" ]; then rm -rf "$tmpdir"; return 1; fi
-        if GOOS=linux GOARCH="$goarch" go build -C "$srcdir" -o "$tmpdir/sysmon-go" ./cmd/sysmon >/dev/null 2>&1; then
+        if CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -C "$srcdir" -o "$tmpdir/sysmon-go" ./cmd/sysmon >/dev/null 2>&1; then
             sudo install -m 0755 "$tmpdir/sysmon-go" "$sysmon_go"
             rm -rf "$tmpdir"
             return 0
