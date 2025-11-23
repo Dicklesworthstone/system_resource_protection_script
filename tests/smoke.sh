@@ -3,6 +3,20 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+if command -v bashate >/dev/null 2>&1; then
+  echo "[lint] bashate (ignore long lines/style-only)"
+  bashate -i E006,E040 install.sh tests/*.sh verify.sh
+else
+  echo "[lint] bashate not installed; skipping"
+fi
+
+if command -v shellcheck >/dev/null 2>&1; then
+  echo "[lint] shellcheck install.sh verify.sh"
+  shellcheck install.sh verify.sh
+else
+  echo "[lint] shellcheck not installed; skipping"
+fi
+
 echo "[smoke] bash -n install.sh"
 bash -n install.sh
 
