@@ -1177,7 +1177,11 @@ EOF
         fi
         local tmpdir srcdir tar_url
         tmpdir=$(mktemp -d)
-        tar_url="https://github.com/Dicklesworthstone/system_resource_protection_script/archive/refs/heads/${build_ref}.tar.gz"
+        if [ "$build_ref" = "main" ] || [ "$build_ref" = "HEAD" ]; then
+            tar_url="https://github.com/Dicklesworthstone/system_resource_protection_script/archive/refs/heads/${build_ref}.tar.gz"
+        else
+            tar_url="https://github.com/Dicklesworthstone/system_resource_protection_script/archive/refs/tags/${build_ref}.tar.gz"
+        fi
         if ! curl -fsSL "$tar_url" | tar xz -C "$tmpdir"; then
             rm -rf "$tmpdir"; return 1
         fi

@@ -46,8 +46,8 @@ jobs:
       - name: Build sysmon-go binaries
         run: |
           mkdir -p dist
-          GOOS=linux GOARCH=amd64 go build -o dist/sysmon-linux-amd64 ./cmd/sysmon
-          GOOS=linux GOARCH=arm64 go build -o dist/sysmon-linux-arm64 ./cmd/sysmon
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/sysmon-linux-amd64 ./cmd/sysmon
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/sysmon-linux-arm64 ./cmd/sysmon
           ls -lh dist
 
       - name: Generate checksums
