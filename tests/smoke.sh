@@ -43,10 +43,10 @@ PY
 }
 
 extract "install_bash_sysmon(){" "$tmpdir/sysmon"
-extract "sudo tee \"\$check_throttled\" >/dev/null << 'EOF'" "$tmpdir/check-throttled"
-extract "sudo tee \"\$cursor_guard\" >/dev/null << 'EOF'" "$tmpdir/cursor-guard"
-extract "sudo tee \"\$srps_doctor\" >/dev/null << 'EOF'" "$tmpdir/srps-doctor"
-extract "sudo tee \"\$srps_reload\" >/dev/null << 'EOF'" "$tmpdir/srps-reload-rules"
+extract "sudo tee \"\$check_throttled\" >/dev/null" "$tmpdir/check-throttled"
+extract "sudo tee \"\$cursor_guard\" >/dev/null" "$tmpdir/cursor-guard"
+extract "sudo tee \"\$srps_doctor\" >/dev/null" "$tmpdir/srps-doctor"
+extract "sudo tee \"\$srps_reload\" >/dev/null" "$tmpdir/srps-reload-rules"
 
 if command -v bashate >/dev/null 2>&1; then
   echo "[lint] bashate (ignore long lines/style-only)"
