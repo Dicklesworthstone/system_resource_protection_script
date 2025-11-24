@@ -12,9 +12,28 @@ extract() {
 import re, sys, pathlib
 marker, out = sys.argv[1], sys.argv[2]
 text = pathlib.Path("install.sh").read_text()
-# Allow leading whitespace/indentation before the marker
-pattern = r"(?m)^[ \t]*" + re.escape(marker) + r"\n(.*?)\n[ \t]*EOF"
-m = re.search(pattern, text, re.S)
+
+# Robust extraction:
+# 1. If marker is a function name (e.g. "install_bash_sysmon"), find that function and extract the first heredoc <<'EOF' inside it.
+# 2. Otherwise, treat marker as the exact line preceding the heredoc.
+
+if "install_" in marker or "_doctor" in marker or "_reload" in marker:
+    # Heuristic: find function definition or specific marker line
+    # We just use a flexible regex for heredoc start
+    # Match: ... marker ... <<'EOF' ... content ... EOF
+    # We allow any characters between marker and <<'EOF' (like "sudo tee...")
+    pattern = re.escape(marker) + r".*?<<'EOF'\n(.*?)\n[ \t]*EOF"
+    m = re.search(pattern, text, re.S)
+else:
+    # Fallback to exact previous line match
+    pattern = re.escape(marker) + r"\n(.*?)\n[ \t]*EOF"
+    m = re.search(pattern, text, re.S)
+
+if not m:
+    # Fallback: try ignoring indentation on the marker line itself in the regex
+    pattern = r"(?m)^[ \t]*" + re.escape(marker) + r".*?<<'EOF'\n(.*?)\n[ \t]*EOF"
+    m = re.search(pattern, text, re.S)
+
 if not m:
     sys.exit(f"missing script for marker: {marker}")
 pathlib.Path(out).write_text(m.group(1))
@@ -22,7 +41,7 @@ PY
   chmod +x "$outfile"
 }
 
-extract "sudo tee \"\$sysmon_path\" >/dev/null <<'EOF'" "$tmpdir/sysmon"
+extract "install_bash_sysmon(){" "$tmpdir/sysmon"
 extract "sudo tee \"\$check_throttled\" >/dev/null << 'EOF'" "$tmpdir/check-throttled"
 extract "sudo tee \"\$cursor_guard\" >/dev/null << 'EOF'" "$tmpdir/cursor-guard"
 extract "sudo tee \"\$srps_doctor\" >/dev/null << 'EOF'" "$tmpdir/srps-doctor"
