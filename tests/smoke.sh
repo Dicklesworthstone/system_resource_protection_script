@@ -21,7 +21,7 @@ PY
   chmod +x "$outfile"
 }
 
-extract "sudo tee \"\$sysmon\" >/dev/null << 'EOF'" "$tmpdir/sysmon"
+extract "sudo tee \"\$sysmon_path\" >/dev/null <<'EOF'" "$tmpdir/sysmon"
 extract "sudo tee \"\$check_throttled\" >/dev/null << 'EOF'" "$tmpdir/check-throttled"
 extract "sudo tee \"\$cursor_guard\" >/dev/null << 'EOF'" "$tmpdir/cursor-guard"
 extract "sudo tee \"\$srps_doctor\" >/dev/null << 'EOF'" "$tmpdir/srps-doctor"
