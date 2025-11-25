@@ -42,7 +42,7 @@ APT_UPDATED=0
 SHELL_RC=""
 ACTION="install"
 FORCE="no"
-ON_BATTERY=0
+ON_BATTERY=-1
 
 # --------------- Logging Helpers -----------------------------
 print_step() {
@@ -207,8 +207,12 @@ detect_power_profile() {
     elif command -v upower >/dev/null 2>&1; then
         local battery
         battery=$(upower -e 2>/dev/null | grep BAT | head -n1 || true)
-        if [ -n "$battery" ] && upower -i "$battery" 2>/dev/null | grep -qi "state:.*discharging"; then
-            ON_BATTERY=1
+        if [ -n "$battery" ]; then
+            if upower -i "$battery" 2>/dev/null | grep -qi "state:.*discharging"; then
+                ON_BATTERY=1
+            else
+                ON_BATTERY=0
+            fi
         fi
     fi
 }
@@ -1894,6 +1898,13 @@ main_install() {
     detect_system
     detect_power_profile
 
+    local power_str="unknown"
+    if [ "${ON_BATTERY:-0}" -eq 1 ]; then
+        power_str="battery"
+    elif [ "${ON_BATTERY:-0}" -eq 0 ]; then
+        power_str="ac"
+    fi
+
     print_info "Environment:"
     local systemd_str="no" wsl_str="no"
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
@@ -1905,6 +1916,7 @@ main_install() {
 
     echo -e "  Systemd:  $systemd_str"
     echo -e "  WSL:      $wsl_str"
+    echo -e "  Power:    $power_str"
     echo -e "  Package:  apt-get\n"
 
     install_ananicy_cpp

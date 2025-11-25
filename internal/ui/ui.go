@@ -51,7 +51,7 @@ var (
 			BorderForeground(lipgloss.Color(borderColor)).
 			Padding(0, 1).
 			MarginRight(1).
-			MarginBottom(1)
+			MarginBottom(0)
 
 	// Metrics Styles
 	gaugeLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color(primaryColor)).Bold(true)
@@ -416,42 +416,99 @@ func (m *Model) renderDashboard(s model.Sample) string {
 	// Calculate available height for table (approximate)
 	// header=2, row1=5, row2=5, padding=2 -> ~14 lines used
 	availHeight := m.height - 14
-	if availHeight < 5 {
-		availHeight = 5
+	if availHeight < 6 {
+		availHeight = 6
 	}
 
-	procTable := renderProcessTable(m.sortAndFilter(s.Top), availHeight, primaryColor)
-	procCard := cardStyle.Width(55).Height(availHeight).Render(lipgloss.JoinVertical(lipgloss.Left, labelStyle.Render("TOP PROCESSES"), procTable))
-
-	// Right Column (Throttled + IO/FD + PerCore)
-	throttledTable := renderProcessTable(m.sortAndFilter(s.Throttled), 5, secondaryColor)
-	coreBlock := renderCoreGrid(m.perCoreHist, 25) // Width of sparklines
-
-	var ioLeaders, fdLeaders string
-	if m.showIOPanels {
-		ioLeaders = renderProcessTable(m.topIO(s.Top), 6, warningColor)
-		fdLeaders = renderProcessTable(m.topFD(s.Top), 6, warningColor)
-	}
-
-	rightColContent := lipgloss.JoinVertical(lipgloss.Left,
-		labelStyle.Foreground(lipgloss.Color(secondaryColor)).Render("THROTTLED (Nice > 0)"),
-		throttledTable,
-		func() string {
-			if m.showIOPanels {
-				return lipgloss.JoinVertical(lipgloss.Left,
-					labelStyle.Render("IO TOP (R/W kB/s, FDs)"), ioLeaders,
-					labelStyle.Render("FD TOP"), fdLeaders,
-					labelStyle.Render("CPU CORES"), coreBlock)
+	row3 := func() string {
+		// Wide screens: fill horizontal space with multi-column top list
+		if m.width >= 110 {
+			cols := 2
+			if m.width > 170 {
+				cols = 3
 			}
-			return lipgloss.JoinVertical(lipgloss.Left,
-				labelStyle.Render("CPU CORES"), coreBlock,
-				subtleStyle.Render("(IO panels hidden; press i to toggle)"))
-		}(),
-	)
+			procAreaWidth := (m.width * 2) / 3
+			if procAreaWidth < 70 {
+				procAreaWidth = 70
+			}
 
-	rightCard := cardStyle.Render(rightColContent)
+			procTable := renderProcessColumns(m.sortAndFilter(s.Top), cols, availHeight, procAreaWidth-4, primaryColor)
+			procCard := cardStyle.Width(procAreaWidth).Height(availHeight).
+				Render(lipgloss.JoinVertical(lipgloss.Left, labelStyle.Render("TOP PROCESSES"), procTable))
 
-	row3 := lipgloss.JoinHorizontal(lipgloss.Top, procCard, rightCard)
+			rightWidth := m.width - procAreaWidth - 1
+			if rightWidth < 32 {
+				rightWidth = 32
+			}
+			if procAreaWidth+rightWidth+1 > m.width {
+				rightWidth = maxInt(24, m.width-procAreaWidth-1)
+			}
+
+			thHeight := maxInt(5, availHeight/3)
+			ioHeight := maxInt(5, availHeight/3)
+			fdHeight := maxInt(4, availHeight/4)
+			coreWidth := minInt(32, rightWidth-6)
+
+			throttledTable := renderProcessTable(m.sortAndFilter(s.Throttled), thHeight, secondaryColor)
+			ioLeaders := ""
+			fdLeaders := ""
+			if m.showIOPanels {
+				ioLeaders = renderProcessTable(m.topIO(s.Top), ioHeight, warningColor)
+				fdLeaders = renderProcessTable(m.topFD(s.Top), fdHeight, warningColor)
+			}
+			coreBlock := renderCoreGrid(m.perCoreHist, coreWidth)
+
+			rightColContent := lipgloss.JoinVertical(lipgloss.Left,
+				labelStyle.Foreground(lipgloss.Color(secondaryColor)).Render("THROTTLED (Nice > 0)"),
+				throttledTable,
+				func() string {
+					if m.showIOPanels {
+						return lipgloss.JoinVertical(lipgloss.Left,
+							labelStyle.Render("IO TOP (R/W kB/s, FDs)"), ioLeaders,
+							labelStyle.Render("FD TOP"), fdLeaders,
+							labelStyle.Render("CPU CORES"), coreBlock)
+					}
+					return lipgloss.JoinVertical(lipgloss.Left,
+						labelStyle.Render("CPU CORES"), coreBlock,
+						subtleStyle.Render("(IO panels hidden; press i to toggle)"))
+				}(),
+			)
+
+			rightCard := cardStyle.Width(rightWidth).Height(availHeight).Render(rightColContent)
+			return lipgloss.JoinHorizontal(lipgloss.Top, procCard, rightCard)
+		}
+
+		// Narrow screens: fall back to single column
+		procTable := renderProcessTable(m.sortAndFilter(s.Top), availHeight, primaryColor)
+		procCard := cardStyle.Width(55).Height(availHeight).Render(lipgloss.JoinVertical(lipgloss.Left, labelStyle.Render("TOP PROCESSES"), procTable))
+
+		throttledTable := renderProcessTable(m.sortAndFilter(s.Throttled), 5, secondaryColor)
+		coreBlock := renderCoreGrid(m.perCoreHist, 25)
+		var ioLeaders, fdLeaders string
+		if m.showIOPanels {
+			ioLeaders = renderProcessTable(m.topIO(s.Top), 6, warningColor)
+			fdLeaders = renderProcessTable(m.topFD(s.Top), 6, warningColor)
+		}
+
+		rightColContent := lipgloss.JoinVertical(lipgloss.Left,
+			labelStyle.Foreground(lipgloss.Color(secondaryColor)).Render("THROTTLED (Nice > 0)"),
+			throttledTable,
+			func() string {
+				if m.showIOPanels {
+					return lipgloss.JoinVertical(lipgloss.Left,
+						labelStyle.Render("IO TOP (R/W kB/s, FDs)"), ioLeaders,
+						labelStyle.Render("FD TOP"), fdLeaders,
+						labelStyle.Render("CPU CORES"), coreBlock)
+				}
+				return lipgloss.JoinVertical(lipgloss.Left,
+					labelStyle.Render("CPU CORES"), coreBlock,
+					subtleStyle.Render("(IO panels hidden; press i to toggle)"))
+			}(),
+		)
+
+		rightCard := cardStyle.Render(rightColContent)
+		return lipgloss.JoinHorizontal(lipgloss.Top, procCard, rightCard)
+	}()
 
 	return lipgloss.JoinVertical(lipgloss.Left, row1, row2, row3)
 }
@@ -730,6 +787,73 @@ func renderProcessTable(procs []model.Process, height int, highlightColor string
 	return b.String()
 }
 
+// renderProcessColumns splits the process table into multiple narrow columns to avoid tall lists.
+func renderProcessColumns(procs []model.Process, columns, height, totalWidth int, highlightColor string) string {
+	if columns < 1 {
+		columns = 1
+	}
+	if height < 2 {
+		height = 2
+	}
+	maxRows := height - 1 // account for header per column
+	if maxRows < 1 {
+		maxRows = 1
+	}
+	if totalWidth < columns {
+		totalWidth = columns
+	}
+	colWidth := totalWidth / columns
+	if colWidth < 32 {
+		colWidth = 32
+	}
+	if colWidth*columns > totalWidth {
+		colWidth = maxInt(16, totalWidth/columns)
+	}
+	cmdWidth := colWidth - 32 // leave room for metrics
+	if cmdWidth < 8 {
+		cmdWidth = 8
+	}
+
+	limit := minInt(len(procs), columns*maxRows)
+	var cols []string
+	for c := 0; c < columns; c++ {
+		start := c * maxRows
+		if start >= limit {
+			break
+		}
+		end := minInt(start+maxRows, limit)
+		col := renderProcessColumn(procs[start:end], maxRows, cmdWidth, highlightColor)
+		cols = append(cols, lipgloss.NewStyle().Width(colWidth).Render(col))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+}
+
+func renderProcessColumn(procs []model.Process, maxRows int, cmdWidth int, highlightColor string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-*s %5s %3s %5s %5s %5s %5s %4s\n", cmdWidth, "CMD", "PID", "NI", "CPU", "MEM", "Rk", "Wk", "FD")
+
+	for i, p := range procs {
+		if i >= maxRows {
+			break
+		}
+		cmd := truncate(p.Command, cmdWidth)
+		line := fmt.Sprintf("%-*s %5d %3d %5.1f %5.1f %5.0f %5.0f %4d", cmdWidth, cmd, p.PID, p.Nice, p.CPU, p.Memory, p.ReadKBs, p.WriteKBs, p.FDCount)
+
+		style := rowStyle
+		if p.FDDiff > 100 {
+			style = style.Foreground(lipgloss.Color(warningColor)).Bold(true)
+		} else if p.Nice > 0 {
+			style = style.Foreground(lipgloss.Color(secondaryColor))
+		} else if i == 0 {
+			style = style.Foreground(lipgloss.Color(highlightColor)).Bold(true)
+		} else if i%2 == 0 {
+			style = dimStyle
+		}
+		b.WriteString(style.Render(line) + "\n")
+	}
+	return b.String()
+}
+
 func renderCoreGrid(hist map[int][]float64, width int) string {
 	// Create a simple grid. We assume we have hist points.
 	// Sort keys
@@ -773,6 +897,20 @@ func truncate(s string, n int) string {
 		return s[:n-1] + "…"
 	}
 	return s
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func onOff(v bool) string {
