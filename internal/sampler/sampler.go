@@ -209,6 +209,9 @@ func (s *Sampler) topProcs() (top []model.Process, throttled []model.Process, cg
 	cgMap := make(map[string]*cgAgg)
 	newProcIO := make(map[int]procIO)
 	dt := s.Interval.Seconds()
+	if dt <= 0 {
+		dt = 1
+	}
 
 	for _, p := range procs {
 		// Skip kernel threads without name
