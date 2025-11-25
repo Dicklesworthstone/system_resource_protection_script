@@ -2,7 +2,7 @@ class Srps < Formula
   desc "System Resource Protection Script (Ananicy-cpp + helpers)"
   homepage "https://github.com/Dicklesworthstone/system_resource_protection_script"
   url "https://github.com/Dicklesworthstone/system_resource_protection_script/archive/refs/tags/v1.1.4.tar.gz"
-  sha256 "ad433d00a2bdc47bf500c95aea4724a977db7c1f799c669013b343a4923d74ae"
+  sha256 "1c175704688e1ef4f0bd55b2620994c0245fd18d498ae174451c6def45faaa8f"
   license "MIT"
 
   head "https://github.com/Dicklesworthstone/system_resource_protection_script.git", branch: "main"
