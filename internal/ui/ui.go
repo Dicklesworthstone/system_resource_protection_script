@@ -496,12 +496,22 @@ func (m *Model) renderDashboard(s model.Sample) string {
 			return lipgloss.JoinHorizontal(lipgloss.Top, procCard, rightCard)
 		}
 
-		// Narrow screens: fall back to single column
+		// Narrow screens: fall back to single column, but size adaptively
+		rightMin := 32
+		rightWidth := maxInt(rightMin, m.width/3)
+		procAreaWidth := m.width - rightWidth - 1
+		if procAreaWidth < 55 {
+			procAreaWidth = 55
+		}
+		if procAreaWidth > m.width-8 {
+			procAreaWidth = m.width - 8
+		}
 		procTable := renderProcessTable(m.sortAndFilter(s.Top), availHeight, m.topOffset, primaryColor)
-		procCard := cardStyle.Width(55).Height(availHeight).Render(lipgloss.JoinVertical(lipgloss.Left, labelStyle.Render("TOP PROCESSES"), procTable))
+		procCard := cardStyle.Width(procAreaWidth).Height(availHeight).Render(lipgloss.JoinVertical(lipgloss.Left, labelStyle.Render("TOP PROCESSES"), procTable))
 
 		throttledTable := renderProcessTable(m.sortAndFilter(s.Throttled), 5, 0, secondaryColor)
-		coreBlock := renderCoreGrid(m.perCoreHist, 25)
+		coreWidth := minInt(32, rightWidth-6)
+		coreBlock := renderCoreGrid(m.perCoreHist, coreWidth)
 		var ioLeaders, fdLeaders string
 		if m.showIOPanels {
 			ioLeaders = renderProcessTable(m.topIO(s.Top), 6, 0, warningColor)
