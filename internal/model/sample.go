@@ -45,11 +45,14 @@ type Battery struct {
 
 // Process is a lightweight top entry.
 type Process struct {
-	PID     int
-	Nice    int
-	CPU     float64
-	Memory  float64
-	Command string
+	PID      int
+	Nice     int
+	CPU      float64
+	Memory   float64
+	Command  string
+	FDCount  int
+	ReadKBs  float64
+	WriteKBs float64
 }
 
 // Cgroup summarizes CPU usage by unit/name.

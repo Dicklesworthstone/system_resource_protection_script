@@ -23,6 +23,7 @@ SRPS is a single script + helpers that assemble a tuned stack for developer/work
 - **Systemd manager limits** (especially for WSL2) to prevent FD/process explosions.
 - **Helper tools & aliases** for monitoring, throttling, diagnostics.
 - **Modern TUI monitor (`sysmon`)** written in Go (Bubble Tea) with live gauges, tables, per-core sparklines, filters, JSON/NDJSON export. Legacy bash TUI kept as fallback.
+- **IO awareness:** per-process IO throughput (read/write kB/s) and open FD counts surfaced in the TUI/JSON so you can spot runaway file handles or disk hogs and `ionice` them manually.
 
 **Safety-first philosophy:** SRPS never ships an automated process killer. Helpers are log/renice-only; the only termination tool is `kill-cursor`, and you must run it manually. If you choose to run an OOM daemon (e.g., earlyoom), use ultra-conservative thresholds (example below) so action happens only when the machine is effectively out of resources.
 
@@ -146,6 +147,8 @@ Non-TTY: auto emits JSON one-shot. `--json` / `--json-stream` also available.
 - `srps-doctor`, `srps-reload-rules`, optional `srps-pull-rules`, `srps-report`
 - Aliases (when systemd-run available): `limited`, `limited-mem`, `cargo-limited`, `make-limited`, `node-limited`
 - Bash completion at `/etc/bash_completion.d/srps`
+
+IO tip: when you spot a disk hog or FD explosion in `sysmon`, manually drop it to idle IO priority with `sudo ionice -c3 -p <pid>` (log/renice-only helpers ensure no automatic killing).
 
 ---
 

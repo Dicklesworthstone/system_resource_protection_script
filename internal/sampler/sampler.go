@@ -26,11 +26,12 @@ import (
 type Sampler struct {
 	Interval time.Duration
 
-	prevTotal float64
-	prevIdle  float64
-	prevCore  []cpu.TimesStat
-	prevDisk  map[string]disk.IOCountersStat
-	prevNet   []net.IOCountersStat
+	prevTotal  float64
+	prevIdle   float64
+	prevCore   []cpu.TimesStat
+	prevDisk   map[string]disk.IOCountersStat
+	prevNet    []net.IOCountersStat
+	prevProcIO map[int]procIO
 
 	// Cgroup cache
 	cgroupCache map[int]string
@@ -45,8 +46,14 @@ func New(interval time.Duration) *Sampler {
 	return &Sampler{
 		Interval:    interval,
 		prevDisk:    make(map[string]disk.IOCountersStat),
+		prevProcIO:  make(map[int]procIO),
 		cgroupCache: make(map[int]string),
 	}
+}
+
+type procIO struct {
+	read  uint64
+	write uint64
 }
 
 // Stream returns a channel that will receive snapshots until ctx is done.
@@ -200,6 +207,8 @@ func (s *Sampler) topProcs() (top []model.Process, throttled []model.Process, cg
 	procs, _ := process.Processes()
 	type cgAgg struct{ cpu float64 }
 	cgMap := make(map[string]*cgAgg)
+	newProcIO := make(map[int]procIO)
+	dt := s.Interval.Seconds()
 
 	for _, p := range procs {
 		// Skip kernel threads without name
@@ -214,12 +223,29 @@ func (s *Sampler) topProcs() (top []model.Process, throttled []model.Process, cg
 		if cmd == "" {
 			cmd = name
 		}
+		fdCount, _ := p.NumFDs()
+
+		var rRate, wRate float64
+		if ioCounters, err := p.IOCounters(); err == nil && ioCounters != nil {
+			prev := s.prevProcIO[int(p.Pid)]
+			if prev.read > 0 && ioCounters.ReadBytes >= prev.read && dt > 0 {
+				rRate = float64(ioCounters.ReadBytes-prev.read) / 1024.0 / dt
+			}
+			if prev.write > 0 && ioCounters.WriteBytes >= prev.write && dt > 0 {
+				wRate = float64(ioCounters.WriteBytes-prev.write) / 1024.0 / dt
+			}
+			newProcIO[int(p.Pid)] = procIO{read: ioCounters.ReadBytes, write: ioCounters.WriteBytes}
+		}
+
 		entry := model.Process{
-			PID:     int(p.Pid),
-			Nice:    int(nice),
-			CPU:     cpuPct,
-			Memory:  float64(memPct),
-			Command: truncate(cmd, 60),
+			PID:      int(p.Pid),
+			Nice:     int(nice),
+			CPU:      cpuPct,
+			Memory:   float64(memPct),
+			Command:  truncate(cmd, 60),
+			FDCount:  int(fdCount),
+			ReadKBs:  rRate,
+			WriteKBs: wRate,
 		}
 		top = append(top, entry)
 		if nice > 0 {
@@ -251,6 +277,8 @@ func (s *Sampler) topProcs() (top []model.Process, throttled []model.Process, cg
 	if len(cgs) > 16 {
 		cgs = cgs[:16]
 	}
+
+	s.prevProcIO = newProcIO
 	return
 }
 

@@ -577,7 +577,7 @@ func renderProcessTable(procs []model.Process, height int, highlightColor string
 	var b strings.Builder
 
 	// Header
-	fmt.Fprintf(&b, "% -18s %6s %4s %5s %5s\n", "COMMAND", "PID", "NI", "CPU%", "MEM%")
+	fmt.Fprintf(&b, "%-18s %6s %4s %6s %6s %6s %6s %5s\n", "COMMAND", "PID", "NI", "CPU%", "MEM%", "Rk/s", "Wk/s", "FDs")
 
 	count := 0
 	for _, p := range procs {
@@ -586,7 +586,7 @@ func renderProcessTable(procs []model.Process, height int, highlightColor string
 		} // -1 for header
 
 		cmd := truncate(p.Command, 18)
-		line := fmt.Sprintf("% -18s %6d %4d %5.1f %5.1f", cmd, p.PID, p.Nice, p.CPU, p.Memory)
+		line := fmt.Sprintf("%-18s %6d %4d %6.1f %6.1f %6.1f %6.1f %5d", cmd, p.PID, p.Nice, p.CPU, p.Memory, p.ReadKBs, p.WriteKBs, p.FDCount)
 
 		style := rowStyle
 		if p.Nice > 0 {
