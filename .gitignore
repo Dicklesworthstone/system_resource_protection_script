@@ -13,3 +13,12 @@
 *.dylib
 *.test
 **/vendor/
+
+# Compressed daemon logs (timestamped)
+.beads/daemon-*.log.gz
+
+# Temporary/accidental image files
+*.jpg
+*.jpeg
+*.png
+*.gif
