@@ -22,3 +22,6 @@
 *.jpeg
 *.png
 *.gif
+
+# bv (beads viewer) local config and caches
+.bv/
