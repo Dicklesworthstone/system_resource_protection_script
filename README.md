@@ -8,7 +8,7 @@
 [![WSL2](https://img.shields.io/badge/WSL2-Supported-blue?logo=microsoft)](https://learn.microsoft.com/windows/wsl/)
 [![TUI](https://img.shields.io/badge/TUI-Bubble%20Tea-7b5ea7?logo=gnu-bash&logoColor=white)](#%EF%B8%8F-live-system-monitor)
 [![Install](https://img.shields.io/badge/Install-curl%20%7C%20brew%20%7C%20nix-0f9d58)](#-quickstart)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)](LICENSE)
 
 </div>
 
@@ -204,7 +204,7 @@ Safe to re-run the installer any time; it re-applies configs, restores backups o
 
 ## 📜 License
 
-MIT License. See [LICENSE](LICENSE).
+MIT License (with OpenAI/Anthropic Rider). See [LICENSE](LICENSE).
 
 ---
 
