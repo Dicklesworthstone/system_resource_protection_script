@@ -43,6 +43,7 @@ SHELL_RC=""
 ACTION="install"
 FORCE="no"
 ON_BATTERY=-1
+INSTALL_STARTED_EPOCH="${INSTALL_STARTED_EPOCH:-$(date +%s)}"
 
 # --------------- Logging Helpers -----------------------------
 print_step() {
@@ -1758,8 +1759,12 @@ sample_service_logs() {
     fi
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         local recent_errors
+        local -a journal_args=(-u ananicy-cpp -n 80 --no-pager)
+        if [[ "${INSTALL_STARTED_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+            journal_args+=(--since "@$INSTALL_STARTED_EPOCH")
+        fi
         recent_errors="$(
-            sudo journalctl -u ananicy-cpp -n 80 --no-pager 2>/dev/null \
+            sudo journalctl "${journal_args[@]}" 2>/dev/null \
                 | grep -i -E 'error|failed|fatal|invalid|mismatch' \
                 | grep -vi 'cgroup .* already exists' \
                 | tail -10 \
