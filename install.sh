@@ -1757,8 +1757,18 @@ sample_service_logs() {
         return
     fi
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
-        print_info "Recent ananicy-cpp log tail:"
-        sudo journalctl -u ananicy-cpp -n 10 --no-pager 2>/dev/null || true
+        local recent_errors
+        recent_errors="$(
+            sudo journalctl -u ananicy-cpp -n 80 --no-pager 2>/dev/null \
+                | grep -i -E 'error|failed|fatal|invalid|mismatch' \
+                | grep -vi 'cgroup .* already exists' \
+                | tail -10 \
+                || true
+        )"
+        if [ -n "$recent_errors" ]; then
+            print_info "Recent ananicy-cpp error log tail:"
+            printf '%s\n' "$recent_errors"
+        fi
     fi
 }
 
