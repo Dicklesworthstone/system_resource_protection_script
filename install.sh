@@ -513,6 +513,14 @@ configure_ananicy_rules() {
 {"name": "mosh-server","nice": 0,"sched": "other","ioclass": "best-effort"}
 {"name": "bun","nice": 0,"sched": "other","ioclass": "best-effort"}
 {"name": "codex","nice": 0,"sched": "other","ioclass": "best-effort"}
+
+# --- Terminal multiplexer servers: hold ALL agent sessions ----
+# The mux keystroke path must win the CPU race against agent swarms, or every
+# session lags while load/PSI look healthy. These entries must survive rule
+# regeneration: this file is the only thing promoting the mux after a reinstall.
+{"name": "frankenterm-mux-server","nice": -10}
+{"name": "frankenterm-gui","nice": -5}
+{"name": "wezterm-mux-server","nice": -10}
 EOF
 
     printf '%s\n' "${backup_dir}" | sudo tee /etc/ananicy.d/.srps_backup >/dev/null
@@ -587,6 +595,25 @@ net.ipv4.tcp_congestion_control = bbr
 # Allow many memory mappings (large codebases, containers, etc.)
 vm.max_map_count = 2147483642
 EOF
+    fi
+
+    # Big-RAM boxes: percentage dirty limits allow tens of GB of dirty pages
+    # (10% of 499G = 50G) -> multi-second stalls on btrfs commit. Append
+    # absolute caps AFTER the ratios: sysctl -p applies in file order and each
+    # write zeroes its ratio counterpart, so the byte caps end up in effect.
+    local mem_total_kb
+    mem_total_kb="$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+    if [ "${mem_total_kb:-0}" -ge 67108864 ]; then
+        if maybe_dry_run "Would append big-RAM vm.dirty_bytes caps to $sysctl_file"; then
+            :
+        else
+            sudo tee -a "$sysctl_file" >/dev/null << 'EOF'
+
+# Big-RAM (>=64GiB) absolute dirty caps (these override the ratios above)
+vm.dirty_bytes = 4294967296
+vm.dirty_background_bytes = 1073741824
+EOF
+        fi
     fi
 
     if maybe_dry_run "Would apply sysctl -p $sysctl_file"; then
