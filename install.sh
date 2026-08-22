@@ -32,7 +32,14 @@ ENABLE_SAMPLER=${ENABLE_SAMPLER:-1}
 ENABLE_HTML_REPORT=${ENABLE_HTML_REPORT:-1}
 ENABLE_RULE_PULL=${ENABLE_RULE_PULL:-1}
 ENABLE_DIAGNOSTICS=${ENABLE_DIAGNOSTICS:-1}
-DRY_RUN=0
+# DRY_RUN honours an inherited value (README documents `DRY_RUN=1` as a
+# plan-only entry point equivalent to --plan). Normalise the common truthy
+# spellings to 1 so `DRY_RUN=true` can never fall through to a real install;
+# `--plan` / `--install` flags still override this during parse_args.
+case "${DRY_RUN:-0}" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On) DRY_RUN=1 ;;
+    *) DRY_RUN=0 ;;
+esac
 CONFIG_FILE="${SRPS_CONFIG_FILE:-./srps.conf}"
 
 HAS_SYSTEMD=0

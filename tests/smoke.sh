@@ -66,6 +66,14 @@ fi
 echo "[smoke] bash -n install.sh"
 bash -n install.sh
 
+echo "[smoke] DRY_RUN=1 env selects plan mode"
+DRY_RUN=1 ./install.sh >/tmp/srps-plan-env.log 2>&1 || true
+if ! grep -q 'Mode: PLAN' /tmp/srps-plan-env.log; then
+    echo "FATAL: DRY_RUN=1 did not select plan mode (README documents it as equivalent to --plan):"
+    head -20 /tmp/srps-plan-env.log
+    exit 1
+fi
+
 echo "[smoke] sysmoni JSON snapshot"
 SRPS_SYSMONI_JSON=1 SRPS_SYSMONI_INTERVAL=0.1 ./install.sh --plan >/tmp/srps-plan.log || true
 SRPS_SYSMONI_JSON=1 SRPS_SYSMONI_GPU=0 SRPS_SYSMONI_BATT=0 SRPS_SYSMONI_INTERVAL=0.1 "$tmpdir/sysmoni" >/tmp/sysmon.json

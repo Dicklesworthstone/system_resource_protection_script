@@ -15,6 +15,12 @@ documented at their actual position in the linear history.
 
 Post-v1.4.1 work on `main` (not yet tagged).
 
+### Fixes
+- `DRY_RUN=1 bash install.sh` now really runs plan-only, as the README documents. A bare
+  `DRY_RUN=0` at the top of `install.sh` discarded the inherited value, so the env form
+  silently performed a real install; only `--plan` worked. The value is now inherited and
+  normalised (`1`/`true`/`yes`/`on` select plan mode), and CI/smoke tests cover the env form. (#2)
+
 ### Licensing & governance
 - Updated license to MIT with OpenAI/Anthropic Rider
   ([b76316b](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/b76316b467f81c4a835f4478e8a570b05b0c6f5e),

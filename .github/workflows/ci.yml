@@ -22,6 +22,11 @@ jobs:
       - name: Dry-run install plan (no changes)
         run: bash install.sh --plan
 
+      - name: Dry-run via DRY_RUN=1 env (documented plan-only entry point)
+        run: |
+          DRY_RUN=1 bash install.sh | tee /tmp/srps-dryrun-env.log
+          grep -q 'Mode: PLAN' /tmp/srps-dryrun-env.log
+
       - name: Verify SHA256SUMS is up-to-date
         run: |
           bash scripts/update_checksums.sh
