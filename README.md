@@ -157,7 +157,11 @@ IO tip: when you spot a disk hog or FD explosion in `sysmoni`, manually drop it 
 - Services inactive?  
 `systemctl status ananicy-cpp`
 - Ananicy rules?  
-  `ls /etc/ananicy.d` and inspect `00-default/99-system-resource-protection.rules`
+  `ls /etc/ananicy.d` and inspect `zz-srps/system-resource-protection.rules`. ananicy-cpp loads
+  rule files in unsorted readdir order and the last definition of a name wins, so the installer
+  comments out (`# [srps-override]`) every community rule for a name SRPS defines instead of
+  relying on file placement; `10-local/` rules take precedence over SRPS the same way.
+  Check what actually applies with `sudo ananicy-cpp dump rules` (the installer verifies `sshd`).
 - GPU/ROCm timeouts?  
   `SRPS_SYSMONI_GPU=0 sysmoni` to skip probing.
 

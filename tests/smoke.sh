@@ -121,4 +121,93 @@ echo "[smoke] reload-rules JSON"
 SRPS_JSON=1 "$tmpdir/srps-reload-rules" >/tmp/srps-reload.json || true
 python3 -c "import json; json.load(open('/tmp/srps-reload.json'))" || true
 
+echo "[smoke] ananicy override precedence (#3)"
+# ananicy-cpp loads rules in unsorted readdir order (last definition wins), so
+# the installer must retire competing community definitions rather than rely
+# on file placement. Exercise the real helper + rule set on a synthetic tree.
+if ! grep -q 'SRPS_ANANICY_RULES="${SRPS_ANANICY_DIR}/system-resource-protection.rules"' install.sh \
+   || ! grep -q 'SRPS_ANANICY_DIR="/etc/ananicy.d/zz-srps"' install.sh \
+   || grep -q 'sudo tee /etc/ananicy.d/00-default/99-system-resource-protection.rules' install.sh; then
+    echo "FATAL: installer must write the SRPS rule set to /etc/ananicy.d/zz-srps, not 00-default"
+    exit 1
+fi
+if ! grep -q 'SRPS_ANANICY_RULES_LEGACY="/etc/ananicy.d/00-default/99-system-resource-protection.rules"' install.sh; then
+    echo "FATAL: installer lost the legacy-path migration"
+    exit 1
+fi
+extract "sudo tee \"\$SRPS_ANANICY_RULES\" >/dev/null" "$tmpdir/srps.rules"
+sed -n '/^SRPS_ANANICY_PRUNE_MARK=/p; /^srps_prune_conflicting_rules() {/,/^}/p' install.sh > "$tmpdir/prune.sh"
+if ! sed --version 2>/dev/null | grep -q GNU; then
+    if command -v gsed >/dev/null 2>&1; then
+        PRUNE_SED=gsed
+    else
+        echo "WARNING: GNU sed not available; skipping prune behaviour checks"
+        PRUNE_SED=""
+    fi
+else
+    PRUNE_SED="sed"
+fi
+if [ -n "$PRUNE_SED" ]; then
+    tree="$tmpdir/ananicy.d"
+    mkdir -p "$tree/00-default/Networking" "$tree/00-default/Development & Programming" "$tree/zz-srps" "$tree/10-local"
+    cp "$tmpdir/srps.rules" "$tree/zz-srps/system-resource-protection.rules"
+    printf '{ "name": "ssh", "type": "BG_CPUIO" }\n{ "name": "sshd", "type": "BG_CPUIO" }\n{"name":"sshd-session","type":"BG_CPUIO"}\n' > "$tree/00-default/Networking/ssh.rules"
+    printf '{ "name": "bun", "type": "BG_CPUIO" }\n# { "name": "bun", "type": "already-a-comment" }\n' > "$tree/00-default/Development & Programming/bun.rules"
+    printf '{"name": "java.exe", "type": "Game"}\n{"name": "javaXexe", "type": "Game"}\n' > "$tree/00-default/misc.rules"
+    printf '{"name": "cargo", "nice": 0}\n' > "$tree/10-local/mine.rules"
+    # `find -exec sed -i` must resolve to GNU sed too, so shim it via PATH.
+    mkdir -p "$tmpdir/bin"
+    ln -sf "$(command -v "$PRUNE_SED")" "$tmpdir/bin/sed"
+    run_prune() {
+        (
+            PATH="$tmpdir/bin:$PATH"
+            sudo() { "$@"; }
+            # shellcheck disable=SC1090
+            . "$tmpdir/prune.sh"
+            srps_prune_conflicting_rules "$tree/zz-srps" "$tree" "$tree/10-local"
+            srps_prune_conflicting_rules "$tree/10-local" "$tree"
+        )
+    }
+    run_prune
+    expect() {  # expect COUNT PATTERN FILE
+        local got
+        got="$(grep -c -- "$2" "$3" || true)"
+        if [ "$got" != "$1" ]; then
+            echo "FATAL: expected $1 line(s) matching '$2' in ${3#"$tmpdir"/}, got $got:"
+            cat "$3"
+            exit 1
+        fi
+    }
+    expect 1 '^# \[srps-override\] { "name": "sshd", "type": "BG_CPUIO" }$' "$tree/00-default/Networking/ssh.rules"
+    expect 1 '^# \[srps-override\] {"name":"sshd-session"' "$tree/00-default/Networking/ssh.rules"
+    expect 1 '^{ "name": "ssh", "type": "BG_CPUIO" }$' "$tree/00-default/Networking/ssh.rules"
+    expect 1 '^# \[srps-override\] { "name": "bun"' "$tree/00-default/Development & Programming/bun.rules"
+    expect 1 '^# { "name": "bun", "type": "already-a-comment" }$' "$tree/00-default/Development & Programming/bun.rules"
+    expect 1 '^# \[srps-override\] {"name": "java.exe"' "$tree/00-default/misc.rules"
+    expect 1 '^{"name": "javaXexe"' "$tree/00-default/misc.rules"
+    # 10-local outranks SRPS: our cargo line is retired, rustc stays live.
+    expect 1 '^# \[srps-override\] {"name": "cargo"' "$tree/zz-srps/system-resource-protection.rules"
+    expect 1 '^{"name": "rustc"' "$tree/zz-srps/system-resource-protection.rules"
+    expect 1 '^{"name": "cargo", "nice": 0}$' "$tree/10-local/mine.rules"
+    # Every name SRPS defines has exactly one live definition in the tree.
+    while IFS= read -r name; do
+        esc="$(printf '%s' "$name" | sed 's/[]\/$*.^[]/\\&/g')"
+        live="$(find "$tree" -type f -name '*.rules' -exec cat {} + \
+            | grep -v '^[[:space:]]*#' | grep -c "\"name\"[[:space:]]*:[[:space:]]*\"${esc}\"" || true)"
+        if [ "$live" != "1" ]; then
+            echo "FATAL: '$name' has $live live definitions after pruning (expected 1)"
+            exit 1
+        fi
+    done < <(sed -n '/^[[:space:]]*#/d; s/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmpdir/srps.rules" | sort -u)
+    # Idempotent: a second pass changes nothing.
+    before="$(find "$tree" -type f -name '*.rules' -exec cat {} + | cksum)"
+    run_prune
+    after="$(find "$tree" -type f -name '*.rules' -exec cat {} + | cksum)"
+    if [ "$before" != "$after" ]; then
+        echo "FATAL: prune is not idempotent"
+        exit 1
+    fi
+    echo "[check] ananicy override pruning OK"
+fi
+
 echo "[smoke] done"

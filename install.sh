@@ -343,6 +343,74 @@ install_ananicy_cpp() {
 }
 
 # --------------- Step 2: Configure Ananicy Rules -------------
+# Where the SRPS rule set lives. It is a top-level directory of its own (not
+# inside the community tree under 00-default) so that community refreshes never
+# touch it. The pre-#3 location is kept only so it can be migrated away.
+SRPS_ANANICY_DIR="/etc/ananicy.d/zz-srps"
+SRPS_ANANICY_RULES="${SRPS_ANANICY_DIR}/system-resource-protection.rules"
+SRPS_ANANICY_RULES_LEGACY="/etc/ananicy.d/00-default/99-system-resource-protection.rules"
+SRPS_ANANICY_PRUNE_MARK="# [srps-override] "
+
+# srps_prune_conflicting_rules WINNER TARGET_ROOT [PROTECTED_DIR]
+#
+# Comment out (never delete) every rule line under TARGET_ROOT that defines a
+# process "name" also defined by a *.rules file under WINNER, so WINNER holds
+# the only live definition. Files under WINNER and PROTECTED_DIR are left alone.
+#
+# Why: ananicy-cpp walks /etc/ananicy.d with std::filesystem::
+# recursive_directory_iterator (raw readdir order — NOT sorted) and resolves
+# duplicate names with insert_or_assign (last loaded wins). File placement
+# therefore cannot guarantee precedence: on ext4 one box loads
+# `Networking/ssh.rules` before our override and `bun.rules` after it, so sshd
+# is protected while bun silently stays BG_CPUIO (#1, #3). Removing the
+# competing definitions is the only deterministic fix.
+#
+# Idempotent: lines that are already comments are skipped, and the marker
+# prefix lets the uninstaller restore the community lines verbatim.
+srps_prune_conflicting_rules() {
+    local winner="$1" target_root="$2" protected="${3:-}"
+    local names sed_script name esc
+
+    if ! sudo test -e "$winner" 2>/dev/null; then
+        return 0
+    fi
+    # Collect the names WINNER defines (rule lines only; comments ignored).
+    names="$(sudo find "$winner" -type f -name '*.rules' -exec cat {} + 2>/dev/null \
+        | sed -n '/^[[:space:]]*#/d; s/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        | sort -u)"
+    if [ -z "$names" ]; then
+        return 0
+    fi
+
+    sed_script="$(mktemp)"
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
+        # Escape BRE metacharacters so names like "java.exe" match literally.
+        esc="$(printf '%s' "$name" | sed 's/[]\/$*.^[]/\\&/g')"
+        printf '/^[[:space:]]*#/!{/"name"[[:space:]]*:[[:space:]]*"%s"/s/^/%s/;}\n' \
+            "$esc" "$SRPS_ANANICY_PRUNE_MARK" >> "$sed_script"
+    done <<< "$names"
+
+    local -a find_args=("$target_root" -type f -name '*.rules' -not -path "$winner" -not -path "$winner/*")
+    if [ -n "$protected" ]; then
+        find_args+=(-not -path "$protected" -not -path "$protected/*")
+    fi
+    sudo find "${find_args[@]}" -exec sed -i -f "$sed_script" {} + 2>/dev/null || true
+    rm -f "$sed_script"
+}
+
+# Ask the running ananicy-cpp for the rule it will actually apply to NAME and
+# print its nice value (empty if the daemon cannot be queried). This is the
+# only trustworthy check: it reflects load order, not file placement.
+srps_effective_nice() {
+    local name="$1"
+    command -v ananicy-cpp >/dev/null 2>&1 || return 0
+    # awk consumes the whole dump (no early exit) so ananicy-cpp never sees
+    # SIGPIPE, which `set -o pipefail` would otherwise turn into a failure.
+    { sudo ananicy-cpp dump rules 2>/dev/null || true; } \
+        | awk -v key="\"${name}\":" '$1 == key {f=1} f && !done && $1 == "\"nice\":" {sub(",", "", $2); print $2; done=1}'
+}
+
 configure_ananicy_rules() {
     print_step "[2/${TOTAL_STEPS}] Configuring Ananicy rules (browsers, compilers, IDEs, etc.)"
 
@@ -406,10 +474,17 @@ configure_ananicy_rules() {
     else
         # Ensure minimal structure if fetch failed
         sudo mkdir -p /etc/ananicy.d/{00-cgroups,00-types,00-default}
+        # Migrate away from the pre-#3 location: the tree was preserved, so the
+        # old copy of our own file would otherwise linger as a duplicate.
+        if sudo test -f "$SRPS_ANANICY_RULES_LEGACY" 2>/dev/null; then
+            print_info "Removing legacy SRPS rules file ${SRPS_ANANICY_RULES_LEGACY} (moved to ${SRPS_ANANICY_RULES})"
+            sudo rm -f "$SRPS_ANANICY_RULES_LEGACY"
+        fi
     fi
 
     print_info "Installing SRPS custom rules for heavyweight processes..."
-    sudo tee /etc/ananicy.d/00-default/99-system-resource-protection.rules >/dev/null << 'EOF'
+    sudo mkdir -p "$SRPS_ANANICY_DIR"
+    sudo tee "$SRPS_ANANICY_RULES" >/dev/null << 'EOF'
 # ============================================================
 #  system_resource_protection_script custom rules
 #  Focus: compilers, browsers, IDEs, language servers, VMs, etc.
@@ -475,7 +550,6 @@ configure_ananicy_rules() {
 {"name": "eslint","nice": 10,"sched": "batch","ioclass": "idle"}
 {"name": "prettier","nice": 10,"sched": "batch","ioclass": "idle"}
 {"name": "pyright-langserver","nice": 10,"sched": "batch","ioclass": "idle"}
-{"name": "rust-analyzer","nice": 15,"sched": "batch","ioclass": "best-effort"}
 
 # --- Python / data science ------------------------------------
 {"name": "python","nice": 5,"sched": "other","ioclass": "best-effort"}
@@ -507,11 +581,14 @@ configure_ananicy_rules() {
 {"name": "ripgrep","nice": 5,"sched": "other","ioclass": "best-effort"}
 
 # --- Interactive remote-dev transport & agent CLIs: NEVER deprioritize ---
-# Bundled CachyOS rules (00-default, sorted before this file) classify sshd,
-# sshd-session, ssh-agent and bun as BG_CPUIO (nice 16, SCHED_IDLE). On a
-# headless box that starves remote Codex/agent sessions whose process tree is
-# sshd-session -> sh -> bun -> codex, manifesting as multi-second input freezes.
-# These overrides win by sort order and keep the interactive path responsive.
+# Bundled CachyOS rules (00-default) classify sshd, sshd-session, ssh-agent and
+# bun as BG_CPUIO (nice 16, SCHED_IDLE). On a headless box that starves remote
+# Codex/agent sessions whose process tree is sshd-session -> sh -> bun -> codex,
+# manifesting as multi-second input freezes.
+# NOTE: ananicy-cpp loads rule files in raw readdir order (not sorted) and the
+# last definition of a name wins, so this file cannot win by placement. The
+# installer instead comments out every community definition of the names
+# listed here ("# [srps-override]" prefix), making these the only live ones.
 # (Note: `node` above is intentionally batched at nice 5; `bun` is the agent
 # launcher and must stay interactive, so it is pinned here, not batched.)
 {"name": "sshd","nice": 0,"sched": "other","ioclass": "best-effort"}
@@ -532,6 +609,12 @@ EOF
 
     printf '%s\n' "${backup_dir}" | sudo tee /etc/ananicy.d/.srps_backup >/dev/null
 
+    # Precedence is decided by removing competitors, not by file placement:
+    # 10-local (user) > zz-srps (SRPS) > community rules.
+    print_info "Retiring community definitions of the process names SRPS overrides..."
+    srps_prune_conflicting_rules "$SRPS_ANANICY_DIR" /etc/ananicy.d /etc/ananicy.d/10-local
+    srps_prune_conflicting_rules /etc/ananicy.d/10-local /etc/ananicy.d
+
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         print_info "Enabling and starting ananicy-cpp service..."
         if maybe_dry_run "Would systemctl daemon-reload && enable --now ananicy-cpp"; then
@@ -545,6 +628,20 @@ EOF
                 rule_count="$(sudo journalctl -u ananicy-cpp -n 50 --no-pager 2>/dev/null | grep -oP 'Worker initialized with \K[0-9]+' | tail -1 || echo '?')"
             fi
             print_success "ananicy-cpp is active (rules loaded: ${rule_count})"
+
+            # Regression check for #1/#3: ask the daemon what it will really
+            # apply to sshd. A restart is needed because enable --now is a
+            # no-op for an already-running service with stale rules.
+            sudo systemctl restart ananicy-cpp >/dev/null 2>&1 || true
+            local sshd_nice
+            sshd_nice="$(srps_effective_nice sshd)"
+            if [ -z "$sshd_nice" ]; then
+                print_info "Could not query effective rules (ananicy-cpp dump unavailable); skipping sshd check."
+            elif [ "$sshd_nice" = "0" ]; then
+                print_success "Effective sshd rule: nice ${sshd_nice} (SRPS override is live)"
+            else
+                print_warning "Effective sshd rule is nice ${sshd_nice}, expected 0 — a competing rule still wins. Inspect: sudo ananicy-cpp dump rules"
+            fi
 
             if systemctl is-active --quiet gamemoded.service 2>/dev/null; then
                 print_warning "gamemoded.service is active. GameMode and ananicy-cpp both renice processes and can conflict; if you see odd scheduling behaviour, consider disabling one of them."
@@ -1455,7 +1552,7 @@ if [ "${SRPS_JSON:-0}" = "1" ]; then
   "ananicy_errors": $an_errs,
   "user_systemd": $( { systemctl --user show-environment >/dev/null 2>&1 && echo true; } || echo false ),
   "configs": {
-    "ananicy_rules": $(j_file /etc/ananicy.d/00-default/99-system-resource-protection.rules),
+    "ananicy_rules": $(j_file /etc/ananicy.d/zz-srps/system-resource-protection.rules),
     "sysctl": $(j_file /etc/sysctl.d/99-system-resource-protection.conf)
   },
   "etc_world_writable": $( { stat -c "%a" /etc 2>/dev/null | grep -qE '^[0-7]6[0-7]'; } && echo true || echo false ),
@@ -1495,7 +1592,8 @@ else
 fi
 
 section "config files"
-if [ -f /etc/ananicy.d/00-default/99-system-resource-protection.rules ]; then echo "SRPS ananicy rules present"; else echo "⚠ SRPS ananicy rules missing"; fi
+if [ -f /etc/ananicy.d/zz-srps/system-resource-protection.rules ]; then echo "SRPS ananicy rules present"; else echo "⚠ SRPS ananicy rules missing"; fi
+if [ -f /etc/ananicy.d/00-default/99-system-resource-protection.rules ]; then echo "⚠ legacy SRPS rules file still present in 00-default (re-run the installer to migrate)"; fi
 if [ -f /etc/sysctl.d/99-system-resource-protection.conf ]; then echo "sysctl config present"; else echo "sysctl config missing"; fi
 
 section "ananicy recent errors (last 50 lines)"
@@ -1607,11 +1705,41 @@ if [ -d "$backup/10-local" ]; then
 fi
 # Re-emit the SRPS override too — a bare CachyOS refresh re-classifies sshd /
 # bun / agent CLIs as BG_CPUIO and would re-freeze remote sessions otherwise.
-if [ -f "$backup/00-default/99-system-resource-protection.rules" ]; then
-  sudo mkdir -p /etc/ananicy.d/00-default
-  sudo cp -a "$backup/00-default/99-system-resource-protection.rules" /etc/ananicy.d/00-default/ || true
+# The legacy 00-default/99-... location is migrated to zz-srps/ on the way.
+srps_rules="/etc/ananicy.d/zz-srps/system-resource-protection.rules"
+if [ -f "$backup/zz-srps/system-resource-protection.rules" ]; then
+  sudo mkdir -p /etc/ananicy.d/zz-srps
+  sudo cp -a "$backup/zz-srps/system-resource-protection.rules" "$srps_rules" || true
+elif [ -f "$backup/00-default/99-system-resource-protection.rules" ]; then
+  sudo mkdir -p /etc/ananicy.d/zz-srps
+  sudo cp "$backup/00-default/99-system-resource-protection.rules" "$srps_rules" || true
 fi
+
+# ananicy-cpp loads rule files in readdir order (unsorted) and the last
+# definition of a name wins, so placement cannot make an override stick. Comment
+# out every community definition of a name owned by zz-srps (and, above that,
+# by 10-local) so the override is the only live one. Mirrors the installer.
+prune() {
+  local winner="$1" root="$2" protected="${3:-}" names script name esc
+  sudo test -e "$winner" 2>/dev/null || return 0
+  names="$(sudo find "$winner" -type f -name '*.rules' -exec cat {} + 2>/dev/null \
+    | sed -n '/^[[:space:]]*#/d; s/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | sort -u)"
+  [ -n "$names" ] || return 0
+  script="$tmpdir/prune-$$.sed"
+  : > "$script"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    esc="$(printf '%s' "$name" | sed 's/[]\/$*.^[]/\\&/g')"
+    printf '/^[[:space:]]*#/!{/"name"[[:space:]]*:[[:space:]]*"%s"/s/^/# [srps-override] /;}\n' "$esc" >> "$script"
+  done <<< "$names"
+  local -a args=("$root" -type f -name '*.rules' -not -path "$winner" -not -path "$winner/*")
+  [ -n "$protected" ] && args+=(-not -path "$protected" -not -path "$protected/*")
+  sudo find "${args[@]}" -exec sed -i -f "$script" {} + 2>/dev/null || true
+}
+prune /etc/ananicy.d/zz-srps /etc/ananicy.d /etc/ananicy.d/10-local
+prune /etc/ananicy.d/10-local /etc/ananicy.d
 echo "$(c 2)Rules refreshed$(r) | backup: $backup"
+echo "Run 'srps-reload-rules' (or restart ananicy-cpp) to load them."
 EOF
         sudo chmod +x "$srps_pull"
     fi
@@ -1877,6 +2005,15 @@ uninstall_monitoring_tools() {
 
 }
 
+# Remove the SRPS rule file (current and legacy locations) and restore the
+# community lines the installer commented out (see srps_prune_conflicting_rules).
+remove_srps_ananicy_rules() {
+    sudo rm -f "$SRPS_ANANICY_RULES" "$SRPS_ANANICY_RULES_LEGACY" || true
+    sudo rmdir "$SRPS_ANANICY_DIR" 2>/dev/null || true
+    sudo find /etc/ananicy.d -type f -name '*.rules' \
+        -exec sed -i 's/^# \[srps-override\] //' {} + 2>/dev/null || true
+}
+
 uninstall_ananicy_config() {
     print_step "[2/4] Reverting Ananicy configuration (where possible)"
 
@@ -1896,12 +2033,12 @@ uninstall_ananicy_config() {
             print_success "Restored /etc/ananicy.d from backup"
         else
             print_warning "Recorded Ananicy backup directory is invalid; removing SRPS rules only."
-            sudo rm -f /etc/ananicy.d/00-default/99-system-resource-protection.rules || true
+            remove_srps_ananicy_rules
         fi
         sudo rm -f "$backup_file"
     else
         print_info "No SRPS backup file found; removing SRPS rules file if present."
-        sudo rm -f /etc/ananicy.d/00-default/99-system-resource-protection.rules || true
+        remove_srps_ananicy_rules
     fi
 
     if [ "$HAS_SYSTEMD" -eq 1 ] && systemctl is-active --quiet ananicy-cpp; then

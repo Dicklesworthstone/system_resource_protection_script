@@ -16,6 +16,16 @@ documented at their actual position in the linear history.
 Post-v1.4.1 work on `main` (not yet tagged).
 
 ### Fixes
+- The ananicy override for `sshd`/`sshd-session`/`ssh-agent`/`bun`/`codex` (from #1) did not
+  reliably take effect. ananicy-cpp walks `/etc/ananicy.d` with an unsorted
+  `recursive_directory_iterator` and the last-loaded definition of a name wins, so neither the old
+  `00-default/99-...` placement nor any "sorts-last" directory can guarantee precedence (on one ext4
+  host `sshd` was protected while `bun` stayed `BG_CPUIO`). The SRPS rule set now lives in
+  `/etc/ananicy.d/zz-srps/system-resource-protection.rules`, and the installer and
+  `srps-pull-rules` comment out (`# [srps-override]`) every community definition of a name SRPS
+  defines, making the override the only live one; `10-local/` rules win over SRPS the same way. The
+  installer migrates the legacy file, verifies the effective `sshd` rule via
+  `ananicy-cpp dump rules`, and the uninstaller restores the commented lines. (#3)
 - `DRY_RUN=1 bash install.sh` now really runs plan-only, as the README documents. A bare
   `DRY_RUN=0` at the top of `install.sh` discarded the inherited value, so the env form
   silently performed a real install; only `--plan` worked. The value is now inherited and
