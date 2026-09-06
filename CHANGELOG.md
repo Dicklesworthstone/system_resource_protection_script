@@ -16,6 +16,14 @@ documented at their actual position in the linear history.
 Post-v1.4.1 work on `main` (not yet tagged).
 
 ### Fixes
+- `install.sh` no longer rebuilds ananicy-cpp from source on every run and then dies with
+  `ananicy-cpp installation appears to have failed.` when the caller's PATH omits
+  `/usr/local/bin`. CMake installs the binary there, but both the "already installed"
+  short-circuit and the post-install check relied on a bare `command -v`, so supervised runs
+  with a sanitized PATH (ACFS runs verified installers with `PATH=/usr/sbin:/usr/bin:/sbin:/bin`)
+  failed on every attempt even though `sudo make install` had succeeded. The installer, the
+  effective-rule check and `srps-reload-rules` now probe the well-known install prefixes
+  explicitly after PATH. (agentic_coding_flywheel_setup#386)
 - The ananicy override for `sshd`/`sshd-session`/`ssh-agent`/`bun`/`codex` (from #1) did not
   reliably take effect. ananicy-cpp walks `/etc/ananicy.d` with an unsorted
   `recursive_directory_iterator` and the last-loaded definition of a name wins, so neither the old

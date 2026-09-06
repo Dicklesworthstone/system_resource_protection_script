@@ -292,6 +292,36 @@ apt_install() {
 }
 
 # --------------- Step 1: Install Ananicy-cpp -----------------
+# Print the path of an installed ananicy-cpp binary, or fail if none exists.
+#
+# `command -v` alone is not enough: CMake's default prefix puts the binary in
+# /usr/local/bin, and supervised or sanitized callers (ACFS runs verified
+# installers with PATH=/usr/sbin:/usr/bin:/sbin:/bin) do not have that on
+# PATH. Under such a caller the "already installed" short-circuit never fires,
+# every run rebuilds from source, and the post-install check then reports a
+# failed install even though `sudo make install` succeeded. Probe the
+# well-known install prefixes explicitly after PATH so both checks see the
+# binary regardless of the caller's PATH.
+ananicy_cpp_bin() {
+    local candidate
+    if candidate="$(command -v ananicy-cpp 2>/dev/null)" && [ -n "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    for candidate in /usr/local/bin/ananicy-cpp /usr/local/sbin/ananicy-cpp \
+                     /usr/bin/ananicy-cpp /usr/sbin/ananicy-cpp; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ananicy_cpp_installed() {
+    ananicy_cpp_bin >/dev/null 2>&1
+}
+
 install_ananicy_cpp() {
     print_step "[1/${TOTAL_STEPS}] Installing Ananicy-cpp (process auto-nicer)"
 
@@ -309,8 +339,8 @@ install_ananicy_cpp() {
         apt_install util-linux
     fi
 
-    if command -v ananicy-cpp >/dev/null 2>&1; then
-        print_success "ananicy-cpp already installed"
+    if ananicy_cpp_installed; then
+        print_success "ananicy-cpp already installed ($(ananicy_cpp_bin))"
         return
     fi
 
@@ -335,10 +365,14 @@ install_ananicy_cpp() {
     )
     rm -rf "$tmpdir"
 
-    if command -v ananicy-cpp >/dev/null 2>&1; then
-        print_success "ananicy-cpp installed successfully"
+    # Forget any negative PATH lookup cached before the build, then probe the
+    # install prefixes directly so a caller whose PATH lacks /usr/local/bin
+    # still sees the binary `sudo make install` just placed there.
+    hash -r 2>/dev/null || true
+    if ananicy_cpp_installed; then
+        print_success "ananicy-cpp installed successfully ($(ananicy_cpp_bin))"
     else
-        die "ananicy-cpp installation appears to have failed."
+        die "ananicy-cpp installation appears to have failed (no binary in PATH, /usr/local/bin or /usr/bin)."
     fi
 }
 
@@ -403,11 +437,11 @@ srps_prune_conflicting_rules() {
 # print its nice value (empty if the daemon cannot be queried). This is the
 # only trustworthy check: it reflects load order, not file placement.
 srps_effective_nice() {
-    local name="$1"
-    command -v ananicy-cpp >/dev/null 2>&1 || return 0
+    local name="$1" bin=""
+    bin="$(ananicy_cpp_bin 2>/dev/null)" || return 0
     # awk consumes the whole dump (no early exit) so ananicy-cpp never sees
     # SIGPIPE, which `set -o pipefail` would otherwise turn into a failure.
-    { sudo ananicy-cpp dump rules 2>/dev/null || true; } \
+    { sudo "$bin" dump rules 2>/dev/null || true; } \
         | awk -v key="\"${name}\":" '$1 == key {f=1} f && !done && $1 == "\"nice\":" {sub(",", "", $2); print $2; done=1}'
 }
 
@@ -1638,8 +1672,13 @@ Env:
 USAGE
   exit 0
 fi
+# ananicy-cpp installs to /usr/local/bin (CMake default); accept it there even
+# when the caller's PATH omits /usr/local/bin.
+have_ananicy() {
+  command -v ananicy-cpp >/dev/null 2>&1 || [ -x /usr/local/bin/ananicy-cpp ] || [ -x /usr/bin/ananicy-cpp ]
+}
 if [ "${SRPS_JSON:-0}" = "1" ]; then
-  if command -v ananicy-cpp >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+  if have_ananicy && command -v systemctl >/dev/null 2>&1; then
     sudo systemctl daemon-reload
     ok=$(sudo systemctl restart ananicy-cpp >/dev/null 2>&1 && echo true || echo false)
     sleep 2
@@ -1658,7 +1697,7 @@ if [ ! -d /etc/ananicy.d ]; then
   exit 1
 fi
 
-if command -v ananicy-cpp >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+if have_ananicy && command -v systemctl >/dev/null 2>&1; then
   sudo systemctl daemon-reload
   sudo systemctl restart ananicy-cpp
   sleep 2

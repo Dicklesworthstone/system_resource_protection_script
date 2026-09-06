@@ -210,4 +210,49 @@ if [ -n "$PRUNE_SED" ]; then
     echo "[check] ananicy override pruning OK"
 fi
 
+echo "[smoke] ananicy-cpp detection survives a PATH without /usr/local/bin (ACFS #386)"
+# ACFS runs verified installers with PATH=/usr/sbin:/usr/bin:/sbin:/bin. CMake
+# installs ananicy-cpp to /usr/local/bin, so a plain `command -v` guard rebuilt
+# from source on every run and then declared the (successful) install failed.
+# Exercise the real locator against a fake root-style prefix layout.
+sed -n '/^ananicy_cpp_bin() {/,/^}/p; /^ananicy_cpp_installed() {/,/^}/p' install.sh > "$tmpdir/locator.sh"
+if ! grep -q '^ananicy_cpp_bin() {' "$tmpdir/locator.sh"; then
+    echo "FATAL: install.sh lost the ananicy_cpp_bin locator"
+    exit 1
+fi
+# Every remaining `command -v ananicy-cpp` must be paired with an explicit
+# prefix probe (the locator's candidate= line, or the helper scripts' `|| [ -x
+# /usr/local/bin/ananicy-cpp ]`); a bare guard reintroduces the bug.
+if grep 'command -v ananicy-cpp' install.sh \
+   | grep -v -e 'candidate="$(command -v ananicy-cpp' -e '\[ -x /usr/local/bin/ananicy-cpp \]' >/dev/null; then
+    echo "FATAL: install.sh has a bare 'command -v ananicy-cpp' guard:"
+    grep -n 'command -v ananicy-cpp' install.sh
+    exit 1
+fi
+fake_local="$tmpdir/fake-usr-local-bin"
+mkdir -p "$fake_local"
+printf '#!/bin/sh\nexit 0\n' > "$fake_local/ananicy-cpp"
+chmod +x "$fake_local/ananicy-cpp"
+# 1. Not on PATH, not in any probed prefix -> not installed.
+if env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin bash -c "source '$tmpdir/locator.sh'; ananicy_cpp_installed" 2>/dev/null \
+   && [ ! -x /usr/local/bin/ananicy-cpp ] && [ ! -x /usr/bin/ananicy-cpp ] \
+   && [ ! -x /usr/local/sbin/ananicy-cpp ] && [ ! -x /usr/sbin/ananicy-cpp ]; then
+    echo "FATAL: locator claimed ananicy-cpp is installed on a host without it"
+    exit 1
+fi
+# 2. Only reachable through PATH -> found via command -v.
+found="$(env -i PATH="$fake_local:/usr/bin:/bin" bash -c "source '$tmpdir/locator.sh'; ananicy_cpp_bin")"
+if [ "$found" != "$fake_local/ananicy-cpp" ]; then
+    echo "FATAL: locator did not honour PATH (got '$found')"
+    exit 1
+fi
+# 3. The probed-prefix branch: rewrite the prefix list to the fake dir and hide it from PATH.
+sed "s#/usr/local/bin/ananicy-cpp#$fake_local/ananicy-cpp#" "$tmpdir/locator.sh" > "$tmpdir/locator-fake.sh"
+found="$(env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin bash -c "source '$tmpdir/locator-fake.sh'; ananicy_cpp_bin")"
+if [ "$found" != "$fake_local/ananicy-cpp" ]; then
+    echo "FATAL: locator did not probe the install prefix when PATH lacks it (got '$found')"
+    exit 1
+fi
+echo "[check] ananicy-cpp locator OK"
+
 echo "[smoke] done"
