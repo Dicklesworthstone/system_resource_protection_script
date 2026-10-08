@@ -10,6 +10,25 @@ require() { command -v "$1" >/dev/null 2>&1 || die "Missing required tool: $1"; 
 
 require curl
 
+latest_tag_from_url() {
+  local url="$1" prefix="https://github.com/${REPO}/releases/tag/" tag
+  case "$url" in
+    "$prefix"*) tag="${url#"$prefix"}" ;;
+    *) return 1 ;;
+  esac
+  case "$tag" in
+    ""|*[\?\#[:space:]]*|*..*|/*|*/) return 1 ;;
+  esac
+  printf '%s\n' "$tag"
+}
+
+if [ "$REF" = "latest" ]; then
+  latest_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")" \
+    || die "Failed to resolve latest release"
+  REF="$(latest_tag_from_url "$latest_url")" \
+    || die "Unexpected latest release redirect: $latest_url"
+fi
+
 sha_cmd=""
 if command -v sha256sum >/dev/null 2>&1; then
   sha_cmd="sha256sum"
