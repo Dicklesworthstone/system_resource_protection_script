@@ -1,0 +1,2 @@
+[execution]
+allowlist = ["cargo", "rustc", "nextest", "gcc", "g++", "clang", "clang++", "cc", "c++", "make", "cmake", "ninja", "meson", "bun", "go"]
