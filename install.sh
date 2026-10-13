@@ -1890,6 +1890,54 @@ detect_shell_rc() {
     fi
 }
 
+# Marker lines of the SRPS block in a user's shell rc.
+SRPS_RC_START='# >>> system_resource_protection_script >>>'
+SRPS_RC_END='# <<< system_resource_protection_script <<<'
+
+# srps_rc_block_lines RC
+# Prints "START_LINE END_LINE" for a well-formed SRPS block: exactly one start-marker
+# line and exactly one end-marker line, start before end.
+# Returns 1 when RC has neither marker line, and 2 when the markers are damaged (one
+# missing, duplicated, or out of order). Callers must leave a damaged file untouched:
+# deleting "from the start marker to the end marker" with the end marker missing
+# would delete the rest of the file.
+srps_rc_block_lines() {
+    local rc="$1" starts ends
+    starts="$(grep -n -x -F -- "$SRPS_RC_START" "$rc" 2>/dev/null | cut -d: -f1 || true)"
+    ends="$(grep -n -x -F -- "$SRPS_RC_END" "$rc" 2>/dev/null | cut -d: -f1 || true)"
+    if [ -z "$starts" ] && [ -z "$ends" ]; then
+        return 1
+    fi
+    case "$starts" in '' | *[!0-9]*) return 2 ;; esac
+    case "$ends" in '' | *[!0-9]*) return 2 ;; esac
+    if [ "$starts" -ge "$ends" ]; then
+        return 2
+    fi
+    printf '%s %s\n' "$starts" "$ends"
+}
+
+# srps_rc_rewrite_block RC START_LINE END_LINE [NEW_BLOCK]
+# Replaces lines START_LINE..END_LINE of RC with NEW_BLOCK, in place, or removes
+# them when NEW_BLOCK is omitted. Lines outside the block keep their order and
+# position. RC is first copied to RC.srps-bak, and the result is written back
+# through the existing file, so a symlinked rc stays a symlink.
+srps_rc_rewrite_block() {
+    local rc="$1" start="$2" end="$3" new_block="${4:-}" tmp
+    tmp="$(mktemp)"
+    {
+        if [ "$start" -gt 1 ]; then
+            sed -n "1,$((start - 1))p" "$rc"
+        fi
+        if [ -n "$new_block" ]; then
+            printf '%s\n' "$new_block"
+        fi
+        sed -n "$((end + 1)),\$p" "$rc"
+    } > "$tmp"
+    cp -p "$rc" "$rc.srps-bak"
+    cat "$tmp" > "$rc"
+    rm -f "$tmp"
+}
+
 # The block SRPS keeps in the user's shell rc, between its two marker lines.
 # configure_shell_aliases appends it, and replaces an older block that differs.
 srps_shell_block() {
@@ -1944,11 +1992,16 @@ configure_shell_aliases() {
     # Render the current block once, so an existing block can be compared with it.
     # A block from an older installer used to be left alone forever ("already
     # present"), so later fixes to the block never reached existing installs.
-    local srps_block
+    local srps_block block_lines block_rc=0
     srps_block="$(srps_shell_block)"
-    if grep -q ">>> system_resource_protection_script >>>" "$SHELL_RC"; then
-        local existing_block
-        existing_block="$(sed -n '/^# >>> system_resource_protection_script >>>$/,/^# <<< system_resource_protection_script <<</p' "$SHELL_RC")"
+    block_lines="$(srps_rc_block_lines "$SHELL_RC")" || block_rc=$?
+    if [ "$block_rc" -eq 2 ]; then
+        print_warning "$SHELL_RC has a damaged SRPS block: expected exactly one '$SRPS_RC_START' line followed by exactly one '$SRPS_RC_END' line. Leaving the file untouched; repair or remove those marker lines by hand, then re-run."
+        return
+    fi
+    if [ "$block_rc" -eq 0 ]; then
+        local block_start="${block_lines% *}" block_end="${block_lines#* }" existing_block
+        existing_block="$(sed -n "${block_start},${block_end}p" "$SHELL_RC")"
         if [ "$existing_block" = "$srps_block" ]; then
             print_success "Shell aliases already present in $SHELL_RC"
             return
@@ -1957,9 +2010,8 @@ configure_shell_aliases() {
             print_info "[plan mode] Would update the SRPS block in $SHELL_RC"
             return
         fi
-        print_info "Updating the SRPS block in $SHELL_RC (it differs from this installer's block)"
-        sed -i '/^# >>> system_resource_protection_script >>>$/,/^# <<< system_resource_protection_script <<</d' "$SHELL_RC"
-        printf '\n%s\n' "$srps_block" >> "$SHELL_RC"
+        print_info "Updating the SRPS block in $SHELL_RC in place (it differs from this installer's block; previous file kept as $SHELL_RC.srps-bak)"
+        srps_rc_rewrite_block "$SHELL_RC" "$block_start" "$block_end" "$srps_block"
         print_success "SRPS block updated in $SHELL_RC"
         return
     fi
@@ -2049,10 +2101,18 @@ sample_service_logs() {
 
 # --------------- Uninstall Logic -----------------------------
 uninstall_shell_snippets() {
+    local block_lines block_rc
     for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        if [ -f "$rc" ] && grep -q ">>> system_resource_protection_script >>>" "$rc"; then
-            print_info "Removing SRPS shell block from $rc"
-            sed -i '/^# >>> system_resource_protection_script >>>$/,/^# <<< system_resource_protection_script <<</d' "$rc"
+        [ -f "$rc" ] || continue
+        block_rc=0
+        block_lines="$(srps_rc_block_lines "$rc")" || block_rc=$?
+        if [ "$block_rc" -eq 2 ]; then
+            print_warning "$rc has a damaged SRPS block: expected exactly one '$SRPS_RC_START' line followed by exactly one '$SRPS_RC_END' line. Leaving the file untouched; remove the SRPS lines by hand."
+            continue
+        fi
+        if [ "$block_rc" -eq 0 ]; then
+            print_info "Removing SRPS shell block from $rc (previous file kept as $rc.srps-bak)"
+            srps_rc_rewrite_block "$rc" "${block_lines% *}" "${block_lines#* }"
             print_success "Removed SRPS shell aliases from $rc"
         fi
     done

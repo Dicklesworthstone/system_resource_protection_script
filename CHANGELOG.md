@@ -69,8 +69,13 @@ pending major migrations (Bubble Tea v2, Lip Gloss v2, gopsutil v4) are recorded
   host's `TMPDIR` (default `/tmp`).
 - Re-running the installer now updates an existing SRPS shell block that differs from the current
   one. Before, any existing block was left alone ("already present"), so the `/data/tmp` change
-  above never reached hosts installed with v1.4.2 or earlier. Lines outside the block are kept, and
-  plan mode only reports the update.
+  above never reached hosts installed with v1.4.2 or earlier. The block is replaced in place, so it
+  keeps its position and every line outside it is unchanged; the previous file is kept as
+  `<rc>.srps-bak`, a symlinked rc file stays a symlink, and plan mode only reports the update.
+- The installer and the uninstaller no longer touch an rc file whose SRPS markers are damaged (a
+  start marker without an end marker, duplicates, or the wrong order). They warn and leave the file
+  byte-identical. The uninstaller's old `sed` range delete removed everything from the start marker
+  to the end of the file when the end marker was missing.
 - `srps-doctor` no longer aborts with `USER: unbound variable` where `USER` is unset (systemd
   units, cron, containers); it falls back to `id -un` ([27cef47](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/27cef47a270626bb858003db295c15e5bca0d405)).
 
