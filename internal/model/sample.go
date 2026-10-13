@@ -99,7 +99,21 @@ type Sample struct {
 	Cgroups   []Cgroup
 	Inotify   Inotify
 	Temps     []Temp
+	// Unavailable names essential collectors that failed this sample
+	// ("memory", "swap", "load"). Their fields above are zero and must not be
+	// read as measurements (#7). Omitted from JSON when every collector worked.
+	Unavailable []string `json:",omitempty"`
 }
 
 // Zero returns an empty sample for initialization.
 func Zero() Sample { return Sample{Timestamp: time.Now()} }
+
+// IsUnavailable reports whether the named essential collector failed for this sample.
+func (s Sample) IsUnavailable(name string) bool {
+	for _, n := range s.Unavailable {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}

@@ -79,11 +79,9 @@ func (s *Sampler) Stream(ctx context.Context) <-chan model.Sample {
 }
 
 func (s *Sampler) sample(now time.Time) model.Sample {
-	memStat, _ := mem.VirtualMemory()
-	swapStat, _ := mem.SwapMemory()
+	memStat, swapStat, loadAvg, unavailable := essentials(mem.VirtualMemory, mem.SwapMemory, load.Avg)
 
 	cpuPct, corePct := s.cpuPercents()
-	loadAvg, _ := load.Avg()
 
 	ioStat := s.ioNet()
 
@@ -129,7 +127,37 @@ func (s *Sampler) sample(now time.Time) model.Sample {
 		Cgroups:   cgroups,
 		Inotify:   inotify,
 		Temps:     temps,
+
+		Unavailable: unavailable,
 	}
+}
+
+// essentials reads the memory, swap and load collectors without ever
+// dereferencing a nil result (#7). A failed collector yields a zero value and
+// its name in unavailable. A memory reading with Total == 0 also counts as
+// unavailable: gopsutil v3 returns a nonnil zero stat when /proc/meminfo
+// cannot be read. Swap with Total == 0 is legitimate (no swap configured).
+func essentials(
+	vm func() (*mem.VirtualMemoryStat, error),
+	sw func() (*mem.SwapMemoryStat, error),
+	la func() (*load.AvgStat, error),
+) (memStat *mem.VirtualMemoryStat, swapStat *mem.SwapMemoryStat, loadAvg *load.AvgStat, unavailable []string) {
+	memStat, err := vm()
+	if err != nil || memStat == nil || memStat.Total == 0 {
+		memStat = &mem.VirtualMemoryStat{}
+		unavailable = append(unavailable, "memory")
+	}
+	swapStat, err = sw()
+	if err != nil || swapStat == nil {
+		swapStat = &mem.SwapMemoryStat{}
+		unavailable = append(unavailable, "swap")
+	}
+	loadAvg, err = la()
+	if err != nil || loadAvg == nil {
+		loadAvg = &load.AvgStat{}
+		unavailable = append(unavailable, "load")
+	}
+	return memStat, swapStat, loadAvg, unavailable
 }
 
 // CPU percentages from times delta.

@@ -430,8 +430,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateAlerts(s model.Sample) {
 	m.alertCount = 0
 	m.criticalCPU = s.CPU.Total > 90
-	m.criticalMem = pct(s.Memory.UsedBytes, s.Memory.TotalBytes) > 90
-	m.criticalSwap = pct(s.Memory.SwapUsed, s.Memory.SwapTotal) > 80
+	m.criticalMem = !s.IsUnavailable("memory") && pct(s.Memory.UsedBytes, s.Memory.TotalBytes) > 90
+	m.criticalSwap = !s.IsUnavailable("swap") && pct(s.Memory.SwapUsed, s.Memory.SwapTotal) > 80
 	m.criticalTemp = false
 
 	for _, t := range s.Temps {
@@ -659,6 +659,9 @@ func (m *Model) renderDashboard(s model.Sample) string {
 		memAlert = " " + pulseStyle.Render("LOW MEM")
 	}
 	memDetails := subtleStyle.Render(fmt.Sprintf("%.1f/%.1f GB | cache %.1f GB | buf %.1f GB", bytesToGiB(s.Memory.UsedBytes), bytesToGiB(s.Memory.TotalBytes), bytesToGiB(s.Memory.Cached), bytesToGiB(s.Memory.Buffers)))
+	if s.IsUnavailable("memory") {
+		memDetails = subtleStyle.Render("memory: unavailable (collector failed)")
+	}
 	memBlock := lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Bottom, memGauge, "  ", memGraph, memAlert),
 		memDetails)
@@ -687,6 +690,9 @@ func (m *Model) renderDashboard(s model.Sample) string {
 	// Use miniGaugeStyle as container for load info
 	loadMiniGauge := miniGaugeStyle.Render("LOAD: ") + loadValStyle.Render(fmt.Sprintf("%.2f", s.CPU.Load1)) +
 		subtleStyle.Render(fmt.Sprintf(" (%.0f cores) 5m %.2f 15m %.2f", float64(len(s.CPU.PerCore)), s.CPU.Load5, s.CPU.Load15))
+	if s.IsUnavailable("load") {
+		loadMiniGauge = miniGaugeStyle.Render("LOAD: ") + subtleStyle.Render("unavailable (collector failed)")
+	}
 	miscBlock := lipgloss.JoinVertical(lipgloss.Left,
 		lipgloss.JoinHorizontal(lipgloss.Bottom, swapGauge, swapAlert),
 		loadMiniGauge)
