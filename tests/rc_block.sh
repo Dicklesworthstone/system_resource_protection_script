@@ -72,6 +72,17 @@ cmp -s "$W/rc" "$W/rc.before" && ok "re-runs leave the file identical" || bad "r
 oldblock; cp "$W/rc" "$W/rc.before"; msg=$(DRY=1 run)
 cmp -s "$W/rc" "$W/rc.before" && echo "$msg" | grep -q 'Would update' && ok "plan mode changes nothing" || bad "plan mode: $msg"
 
+# plan mode never touches or creates the rc file; a re-run does not touch it either
+printf 'export FOO=1\n' > "$W/rc"; touch -d '2020-01-01 00:00:00' "$W/rc"; before=$(stat -c %Y "$W/rc")
+DRY=1 run >/dev/null
+[ "$(stat -c %Y "$W/rc")" = "$before" ] && [ "$(blocks)" = 0 ] && ok "plan mode on an rc without a block: content and mtime unchanged" || bad "plan mode touched the rc"
+rm -f "$W/rc"; DRY=1 run >/dev/null
+[ ! -e "$W/rc" ] && ok "plan mode does not create a missing rc" || bad "plan mode created the rc"
+run >/dev/null
+[ "$(blocks)" = 1 ] && ok "a real run creates a missing rc with one block" || bad "missing rc not created"
+touch -d '2020-01-01 00:00:00' "$W/rc"; before=$(stat -c %Y "$W/rc"); run >/dev/null
+[ "$(stat -c %Y "$W/rc")" = "$before" ] && ok "re-run with a current block: mtime unchanged" || bad "re-run touched the rc"
+
 # damaged markers: untouched by install
 damaged() {
   printf '%b' "$2" > "$W/rc"; cp "$W/rc" "$W/rc.before"; rm -f "$W/rc.srps-bak"

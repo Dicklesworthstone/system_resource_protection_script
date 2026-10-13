@@ -1986,8 +1986,12 @@ configure_shell_aliases() {
     detect_shell_rc
     print_info "Using shell rc file: $SHELL_RC"
 
-    mkdir -p "$(dirname "$SHELL_RC")"
-    touch "$SHELL_RC"
+    # Create the rc file only when it is missing, and never in plan mode. An
+    # unconditional touch changed the file's mtime on every run, DRY_RUN included.
+    if [ ! -e "$SHELL_RC" ] && [ "$DRY_RUN" -ne 1 ]; then
+        mkdir -p "$(dirname "$SHELL_RC")"
+        touch "$SHELL_RC"
+    fi
 
     # Render the current block once, so an existing block can be compared with it.
     # A block from an older installer used to be left alone forever ("already

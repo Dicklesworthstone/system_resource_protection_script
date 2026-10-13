@@ -76,6 +76,10 @@ pending major migrations (Bubble Tea v2, Lip Gloss v2, gopsutil v4) are recorded
   start marker without an end marker, duplicates, or the wrong order). They warn and leave the file
   byte-identical. The uninstaller's old `sed` range delete removed everything from the start marker
   to the end of the file when the end marker was missing.
+- Plan mode (`--plan` / `DRY_RUN=1`) no longer touches the shell rc file. The installer ran
+  `touch` on it before checking the mode, which changed its modification time and created the file
+  when it was missing. A normal run now creates the rc file only when it is missing, so re-runs
+  leave its modification time alone too.
 - `srps-doctor` no longer aborts with `USER: unbound variable` where `USER` is unset (systemd
   units, cron, containers); it falls back to `id -un` ([27cef47](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/27cef47a270626bb858003db295c15e5bca0d405)).
 
