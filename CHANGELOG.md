@@ -13,9 +13,15 @@ documented at their actual position in the linear history.
 
 ## [Unreleased]
 
-Post-v1.4.1 work on `main` (not yet tagged).
+Nothing yet.
 
-### Fixes
+## [v1.4.3](https://github.com/Dicklesworthstone/system_resource_protection_script/releases/tag/v1.4.3) -- 2026-10-13 (Release)
+
+Installer and `sysmoni` fixes since v1.4.2. No dependency changes: the Go dependency audit and the
+pending major migrations (Bubble Tea v2, Lip Gloss v2, gopsutil v4) are recorded in
+`UPGRADE_LOG.md` and stay a separate qualification.
+
+### Installer fixes
 - `install.sh` no longer rebuilds ananicy-cpp from source on every run and then dies with
   `ananicy-cpp installation appears to have failed.` when the caller's PATH omits
   `/usr/local/bin`. CMake installs the binary there, but both the "already installed"
@@ -38,6 +44,50 @@ Post-v1.4.1 work on `main` (not yet tagged).
   `DRY_RUN=0` at the top of `install.sh` discarded the inherited value, so the env form
   silently performed a real install; only `--plan` worked. The value is now inherited and
   normalised (`1`/`true`/`yes`/`on` select plan mode), and CI/smoke tests cover the env form. (#2)
+- The bundled CachyOS ananicy rules classify `sshd`, `sshd-session`, `ssh-agent` and `bun` as
+  `BG_CPUIO` (nice 16, `SCHED_IDLE`), which froze remote agent sessions. SRPS now never
+  deprioritizes the remote-dev transport and agent CLIs (`sshd`, `sshd-session`, `ssh-agent`,
+  `mosh-server`, `bun`, `codex`), and `srps-pull-rules` no longer drops the SRPS override when it
+  refreshes the community rules ([503c88d](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/503c88d5ee848e93a0dc4a059f18d7f249c550f2); made deterministic by the `zz-srps/` change above).
+- Nightly reinstalls (ACFS re-runs the installer) no longer undo two protections on large hosts:
+  the ananicy rules now promote `frankenterm-mux-server`/`wezterm-mux-server` (nice -10) and
+  `frankenterm-gui` (-5) together with the rest of the rules, and hosts with at least 64 GiB of RAM get
+  `vm.dirty_bytes=4G` / `vm.dirty_background_bytes=1G`, so the dirty-ratio limits no longer allow
+  ~50 GB of dirty pages and multi-second btrfs commit stalls ([cb66c0b](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/cb66c0bb70d0482939ed228054a581af07733f46)).
+- `vm.vfs_cache_pressure` is raised from 50 to 200, so the kernel reclaims dentry/inode caches under
+  pressure instead of preferring to keep them ([56e7192](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/56e7192f0abeb5f7dd0ce0afc761818e8591041e)).
+- The shell protection block sets `TMPDIR` and `CARGO_TARGET_DIR` to `/data/tmp` instead of `/tmp`.
+  On tmpfs-backed `/tmp`, agent cargo builds silently consumed RAM; the block no longer overrides
+  the `/data/tmp` values from `/etc/environment` ([c6eaf13](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/c6eaf13bb70db5f5336ac76da259e05677b6165c)).
+- Benign ananicy journal noise is no longer reported as an installer error, and error sampling is
+  scoped to the current run ([670800d](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/670800d9d108cc94cdd2129e71e91fc1362b8b53), [9474924](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/9474924687c6b6b26328972dd287ae13e54f0aea)).
+
+- `srps-doctor` no longer aborts with `USER: unbound variable` where `USER` is unset (systemd
+  units, cron, containers); it falls back to `id -un` ([27cef47](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/27cef47a270626bb858003db295c15e5bca0d405)).
+
+- `srps-doctor` no longer reports existing SRPS ananicy rules as missing when `/etc/ananicy.d` is
+  root-only (mode 700): it checks via passwordless `sudo -n` and otherwise says it cannot tell
+  (JSON `null`) and suggests `sudo srps-doctor` ([40e5c49](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/40e5c493d99f1381f3cdff7bf890648a8b985cdb)).
+
+### `sysmoni` fixes
+- `sysmoni --help` and unknown flags no longer start sampling after printing usage: help exits 0,
+  a bad flag exits 2, both without JSON output. A zero or negative `--interval` or
+  `SRPS_SYSMONI_INTERVAL` now fails with a clear error (exit 2) instead of panicking in
+  `time.NewTicker` (#6, [6860501](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/6860501f13df6f9ce4aee73679eb14b0df4e6110)).
+- A failed memory, swap or load collector is never dereferenced. Its fields are zero and its name is
+  listed in a new `Unavailable` field of the JSON/NDJSON sample (present only when something
+  failed), and the TUI shows "unavailable" instead of a misleading 0 and raises no memory/swap
+  alert from unknown data. An unreadable `/proc/meminfo` (gopsutil v3 returns an all-zero reading)
+  is reported as unavailable too (#7, [13b7f67](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/13b7f67b3e2516c6a3bcd3057321e58f105786df)).
+- First Go unit tests: flag/env parsing and collector-failure handling.
+
+### Integrity
+- `SHA256SUMS` matches the current `install.sh` again, so the integrity-first install path
+  (`verify.sh`) accepts it (#5, [b6b440f](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/b6b440f13ca45944ec534a501cfa5bb6e21c4f50)).
+- `verify.sh` resolves `latest` to the published release tag and verifies the installer from that
+  tag's immutable files ([368978c](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/368978cca4092a8c80223beaa29314c55cf26d53)).
+
+## [v1.4.2](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/49288dd0dc37481b6f0a0a782d7c78ac123f201c) -- 2026-04-25 (Release)
 
 ### Licensing & governance
 - Updated license to MIT with OpenAI/Anthropic Rider
