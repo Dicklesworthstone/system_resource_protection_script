@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"os"
 
@@ -12,7 +14,18 @@ import (
 )
 
 func main() {
-	cfg := config.FromFlags(os.Args[1:])
+	cfg, err := config.FromFlags(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		return // usage already printed; never sample after --help (#6)
+	}
+	if err != nil {
+		// The flag package already printed the parse error and usage; interval
+		// validation errors are printed here. Exit 2 like flag.ExitOnError.
+		if !isFlagParseError(err) {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(2)
+	}
 
 	// JSON/NDJSON modes
 	if cfg.JSON || cfg.JSONStream || !isTTY() {
@@ -42,4 +55,11 @@ func isTTY() bool {
 		return false
 	}
 	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// isFlagParseError reports whether err came from flag.FlagSet.Parse, which has
+// already written the message and usage to stderr.
+func isFlagParseError(err error) bool {
+	var interval *config.IntervalError
+	return !errors.As(err, &interval)
 }
