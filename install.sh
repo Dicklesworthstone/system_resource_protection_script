@@ -1542,6 +1542,17 @@ set -euo pipefail
 color() { printf "\033[%sm%s\033[0m" "$1" "$2"; }
 section() { echo -e "\n$(color "1;34" "==>") $*"; }
 
+# root_file_state PATH -> present | absent | unknown. On some hosts /etc/ananicy.d is
+# root-only (mode 700), so a plain [ -f ] run as a normal user reported existing SRPS
+# rules as missing. Fall back to passwordless sudo; say "unknown" rather than guess.
+root_file_state() {
+  if [ -f "$1" ]; then echo present
+  elif ls "$(dirname "$1")" >/dev/null 2>&1; then echo absent
+  elif sudo -n test -f "$1" 2>/dev/null; then echo present
+  elif sudo -n true 2>/dev/null; then echo absent
+  else echo unknown; fi
+}
+
 if [ "${1:-}" = "--help" ]; then
   cat <<'USAGE'
 srps-doctor - quick diagnostics
@@ -1586,7 +1597,7 @@ if [ "${SRPS_JSON:-0}" = "1" ]; then
   "ananicy_errors": $an_errs,
   "user_systemd": $( { systemctl --user show-environment >/dev/null 2>&1 && echo true; } || echo false ),
   "configs": {
-    "ananicy_rules": $(j_file /etc/ananicy.d/zz-srps/system-resource-protection.rules),
+    "ananicy_rules": $(case "$(root_file_state /etc/ananicy.d/zz-srps/system-resource-protection.rules)" in present) echo true;; absent) echo false;; *) echo null;; esac),
     "sysctl": $(j_file /etc/sysctl.d/99-system-resource-protection.conf)
   },
   "etc_world_writable": $( { stat -c "%a" /etc 2>/dev/null | grep -qE '^[0-7]6[0-7]'; } && echo true || echo false ),
@@ -1626,8 +1637,12 @@ else
 fi
 
 section "config files"
-if [ -f /etc/ananicy.d/zz-srps/system-resource-protection.rules ]; then echo "SRPS ananicy rules present"; else echo "⚠ SRPS ananicy rules missing"; fi
-if [ -f /etc/ananicy.d/00-default/99-system-resource-protection.rules ]; then echo "⚠ legacy SRPS rules file still present in 00-default (re-run the installer to migrate)"; fi
+case "$(root_file_state /etc/ananicy.d/zz-srps/system-resource-protection.rules)" in
+  present) echo "SRPS ananicy rules present" ;;
+  absent) echo "⚠ SRPS ananicy rules missing" ;;
+  *) echo "? SRPS ananicy rules: /etc/ananicy.d is not readable as $(id -un); run: sudo srps-doctor" ;;
+esac
+if [ "$(root_file_state /etc/ananicy.d/00-default/99-system-resource-protection.rules)" = present ]; then echo "⚠ legacy SRPS rules file still present in 00-default (re-run the installer to migrate)"; fi
 if [ -f /etc/sysctl.d/99-system-resource-protection.conf ]; then echo "sysctl config present"; else echo "sysctl config missing"; fi
 
 section "ananicy recent errors (last 50 lines)"
