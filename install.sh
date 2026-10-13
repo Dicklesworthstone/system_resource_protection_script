@@ -1890,37 +1890,10 @@ detect_shell_rc() {
     fi
 }
 
-configure_shell_aliases() {
-    if [ "$ENABLE_SHELL_ALIASES" -ne 1 ]; then
-        print_warning "Shell alias configuration skipped by configuration."
-        return
-    fi
-
-    detect_shell_rc
-    print_info "Using shell rc file: $SHELL_RC"
-
-    mkdir -p "$(dirname "$SHELL_RC")"
-    touch "$SHELL_RC"
-
-    if grep -q ">>> system_resource_protection_script >>>" "$SHELL_RC"; then
-        print_success "Shell aliases already present in $SHELL_RC"
-        return
-    fi
-
-    if command -v systemd-run >/dev/null 2>&1; then
-        if command -v systemctl >/dev/null 2>&1 && ! systemctl --user show-environment >/dev/null 2>&1; then
-            print_warning "systemd-run is available but the user systemd instance looks inactive; 'limited*' aliases may show bus errors until a user systemd session is running (e.g., login via a systemd-managed session or enable lingering)."
-        fi
-    fi
-
-    if [ "$DRY_RUN" -eq 1 ]; then
-        print_info "[plan mode] Would append SRPS aliases to $SHELL_RC"
-        return
-    fi
-
-    print_info "Adding resource-limited helpers and aliases to $SHELL_RC"
-    cat >> "$SHELL_RC" << 'EOF'
-
+# The block SRPS keeps in the user's shell rc, between its two marker lines.
+# configure_shell_aliases appends it, and replaces an older block that differs.
+srps_shell_block() {
+    cat << 'EOF'
 # >>> system_resource_protection_script >>>
 # Resource-limited command runners using systemd user scopes (if available)
 if command -v systemd-run >/dev/null 2>&1; then
@@ -1940,16 +1913,70 @@ if command -v check-throttled >/dev/null 2>&1; then
 fi
 
 # Rust / Cargo env
-# TMPDIR and CARGO_TARGET_DIR live on /data (separate NVMe with
-# compress=zstd:1,noatime) rather than /tmp. /tmp is tmpfs on many fleet
-# hosts and tmpfs eats RAM under agent build load; the btrfs root disk
-# also pins btrfs_inode/dentry slab for hours under cargo target dir
-# write amplification. /etc/environment and /etc/profile.d/fleet-env.sh
-# set these to /data/tmp; do not regress them here.
-export TMPDIR=/data/tmp
-export CARGO_TARGET_DIR=/data/tmp/cargo-target
+# Where a host has /data/tmp (a separate disk), TMPDIR and CARGO_TARGET_DIR
+# live there rather than on /tmp: /tmp is tmpfs on many hosts, and tmpfs eats
+# RAM under agent build load. Do not point them back at /tmp on such hosts.
+# Elsewhere /data/tmp does not exist, and exporting it would break mktemp and
+# every tool that uses TMPDIR, so keep the host's TMPDIR (default /tmp).
+if [ -d /data/tmp ] && [ -w /data/tmp ]; then
+  export TMPDIR=/data/tmp
+  export CARGO_TARGET_DIR=/data/tmp/cargo-target
+else
+  export TMPDIR="${TMPDIR:-/tmp}"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/cargo-target}"
+fi
 # <<< system_resource_protection_script <<<
 EOF
+}
+
+configure_shell_aliases() {
+    if [ "$ENABLE_SHELL_ALIASES" -ne 1 ]; then
+        print_warning "Shell alias configuration skipped by configuration."
+        return
+    fi
+
+    detect_shell_rc
+    print_info "Using shell rc file: $SHELL_RC"
+
+    mkdir -p "$(dirname "$SHELL_RC")"
+    touch "$SHELL_RC"
+
+    # Render the current block once, so an existing block can be compared with it.
+    # A block from an older installer used to be left alone forever ("already
+    # present"), so later fixes to the block never reached existing installs.
+    local srps_block
+    srps_block="$(srps_shell_block)"
+    if grep -q ">>> system_resource_protection_script >>>" "$SHELL_RC"; then
+        local existing_block
+        existing_block="$(sed -n '/^# >>> system_resource_protection_script >>>$/,/^# <<< system_resource_protection_script <<</p' "$SHELL_RC")"
+        if [ "$existing_block" = "$srps_block" ]; then
+            print_success "Shell aliases already present in $SHELL_RC"
+            return
+        fi
+        if [ "$DRY_RUN" -eq 1 ]; then
+            print_info "[plan mode] Would update the SRPS block in $SHELL_RC"
+            return
+        fi
+        print_info "Updating the SRPS block in $SHELL_RC (it differs from this installer's block)"
+        sed -i '/^# >>> system_resource_protection_script >>>$/,/^# <<< system_resource_protection_script <<</d' "$SHELL_RC"
+        printf '\n%s\n' "$srps_block" >> "$SHELL_RC"
+        print_success "SRPS block updated in $SHELL_RC"
+        return
+    fi
+
+    if command -v systemd-run >/dev/null 2>&1; then
+        if command -v systemctl >/dev/null 2>&1 && ! systemctl --user show-environment >/dev/null 2>&1; then
+            print_warning "systemd-run is available but the user systemd instance looks inactive; 'limited*' aliases may show bus errors until a user systemd session is running (e.g., login via a systemd-managed session or enable lingering)."
+        fi
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        print_info "[plan mode] Would append SRPS aliases to $SHELL_RC"
+        return
+    fi
+
+    print_info "Adding resource-limited helpers and aliases to $SHELL_RC"
+    printf '\n%s\n' "$srps_block" >> "$SHELL_RC"
 
     print_success "Shell aliases added to $SHELL_RC"
 }

@@ -62,6 +62,15 @@ pending major migrations (Bubble Tea v2, Lip Gloss v2, gopsutil v4) are recorded
 - Benign ananicy journal noise is no longer reported as an installer error, and error sampling is
   scoped to the current run ([670800d](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/670800d9d108cc94cdd2129e71e91fc1362b8b53), [9474924](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/9474924687c6b6b26328972dd287ae13e54f0aea)).
 
+- The shell block in the user's rc file no longer exports `TMPDIR=/data/tmp` and
+  `CARGO_TARGET_DIR=/data/tmp/cargo-target` unconditionally. On a host without `/data/tmp` that
+  pointed `TMPDIR` at a directory that does not exist and broke `mktemp` and every tool that uses
+  it. The block now uses `/data/tmp` only where it exists and is writable, and otherwise keeps the
+  host's `TMPDIR` (default `/tmp`).
+- Re-running the installer now updates an existing SRPS shell block that differs from the current
+  one. Before, any existing block was left alone ("already present"), so the `/data/tmp` change
+  above never reached hosts installed with v1.4.2 or earlier. Lines outside the block are kept, and
+  plan mode only reports the update.
 - `srps-doctor` no longer aborts with `USER: unbound variable` where `USER` is unset (systemd
   units, cron, containers); it falls back to `id -un` ([27cef47](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/27cef47a270626bb858003db295c15e5bca0d405)).
 
