@@ -1590,7 +1590,7 @@ if [ "${SRPS_JSON:-0}" = "1" ]; then
     "sysctl": $(j_file /etc/sysctl.d/99-system-resource-protection.conf)
   },
   "etc_world_writable": $( { stat -c "%a" /etc 2>/dev/null | grep -qE '^[0-7]6[0-7]'; } && echo true || echo false ),
-  "in_docker_group": $( { id -nG "$USER" | grep -qw docker; } && echo true || echo false )
+  "in_docker_group": $( { id -nG "${USER:-$(id -un)}" | grep -qw docker; } && echo true || echo false )
 }
 JSON
   exit 0
@@ -1644,7 +1644,7 @@ if stat -c "%a" /etc 2>/dev/null | grep -qE '^[0-7]6[0-7]'; then
 else
   echo "/etc perms: ok"
 fi
-if id -nG "$USER" | grep -qw docker; then
+if id -nG "${USER:-$(id -un)}" | grep -qw docker; then
   echo "⚠ user in docker group (container cgroups can behave differently)"
 else
   echo "docker group: not a member"
