@@ -19,6 +19,9 @@ jobs:
       - name: Shellcheck
         run: shellcheck install.sh verify.sh
 
+      - name: Installer and doctor reliability regressions (mocked)
+        run: python3 tests/reliability.py
+
       - name: Dry-run install plan (no changes)
         run: bash install.sh --plan
 

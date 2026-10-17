@@ -319,7 +319,36 @@ ananicy_cpp_bin() {
 }
 
 ananicy_cpp_installed() {
-    ananicy_cpp_bin >/dev/null 2>&1
+    local bin output
+    bin="$(ananicy_cpp_bin)" || return 1
+    # --version never starts the daemon; bound the probe if the binary is broken.
+    if ! output="$(timeout -k 2 10 "$bin" --version 2>&1)"; then
+        print_warning "ananicy-cpp cannot load/run ($bin): $output" >&2
+        return 1
+    fi
+}
+
+# Require the same running process throughout a bounded observation window.
+# A Type=simple start can succeed before the dynamic loader fails.
+srps_service_stable() {
+    local snapshot previous="" i
+    for ((i=0; i<6; i++)); do
+        snapshot="$(systemctl show ananicy-cpp --property=ActiveState,SubState,NRestarts,ExecMainStartTimestampMonotonic,ExecMainStatus 2>/dev/null)" || return 1
+        if ! grep -qx 'ActiveState=active' <<< "$snapshot" ||
+           ! grep -qx 'SubState=running' <<< "$snapshot" ||
+           ! grep -qx 'ExecMainStatus=0' <<< "$snapshot" ||
+           ! grep -qE '^NRestarts=[0-9]+$' <<< "$snapshot" ||
+           ! grep -qE '^ExecMainStartTimestampMonotonic=[1-9][0-9]*$' <<< "$snapshot"; then
+            print_warning "ananicy-cpp startup failed: $snapshot" >&2
+            return 1
+        fi
+        if [ -n "$previous" ] && [ "$previous" != "$snapshot" ]; then
+            print_warning "ananicy-cpp restarted during startup verification: $snapshot" >&2
+            return 1
+        fi
+        previous="$snapshot"
+        [ "$i" -eq 5 ] || sleep 2
+    done
 }
 
 install_ananicy_cpp() {
@@ -372,7 +401,7 @@ install_ananicy_cpp() {
     if ananicy_cpp_installed; then
         print_success "ananicy-cpp installed successfully ($(ananicy_cpp_bin))"
     else
-        die "ananicy-cpp installation appears to have failed (no binary in PATH, /usr/local/bin or /usr/bin)."
+        die "ananicy-cpp installation appears to have failed (binary missing or unable to load/run after rebuild)."
     fi
 }
 
@@ -656,7 +685,10 @@ EOF
         else
             sudo systemctl daemon-reload
             if sudo systemctl enable --now ananicy-cpp >/dev/null 2>&1; then
-            sleep 2
+            # Restart even an existing unit so updated rules and rebuilt binaries load.
+            if ! sudo systemctl restart ananicy-cpp >/dev/null 2>&1 || ! srps_service_stable; then
+                die "ananicy-cpp did not remain running; inspect sudo systemctl status ananicy-cpp and sudo journalctl -u ananicy-cpp"
+            fi
             local rule_count="?"
             if command -v journalctl >/dev/null 2>&1; then
                 rule_count="$(sudo journalctl -u ananicy-cpp -n 50 --no-pager 2>/dev/null | grep -oP 'Worker initialized with \K[0-9]+' | tail -1 || echo '?')"
@@ -666,7 +698,6 @@ EOF
             # Regression check for #1/#3: ask the daemon what it will really
             # apply to sshd. A restart is needed because enable --now is a
             # no-op for an already-running service with stale rules.
-            sudo systemctl restart ananicy-cpp >/dev/null 2>&1 || true
             local sshd_nice
             sshd_nice="$(srps_effective_nice sshd)"
             if [ -z "$sshd_nice" ]; then
@@ -681,7 +712,7 @@ EOF
                 print_warning "gamemoded.service is active. GameMode and ananicy-cpp both renice processes and can conflict; if you see odd scheduling behaviour, consider disabling one of them."
             fi
         else
-            print_warning "Failed to enable/start ananicy-cpp; check with: sudo systemctl status ananicy-cpp"
+            die "Failed to enable/start ananicy-cpp; check with: sudo systemctl status ananicy-cpp"
         fi
         fi
     else
@@ -1562,29 +1593,50 @@ USAGE
   exit 0
 fi
 
+# Capture status and stderr before filtering: journalctl may exit zero while
+# warning that the caller cannot see system messages. Empty output is ambiguous.
+journal_status=unknown
+journal_text=""
+read_journal() {
+  local output
+  if output="$(LC_ALL=C journalctl "$@" --no-pager 2>&1)" &&
+     ! grep -qiE 'permission|not seeing messages|not permitted|access denied|no journal files' <<< "$output" &&
+     [ -n "$output" ] && ! grep -q '^-- No entries --$' <<< "$output"; then
+    journal_text="$output"
+    journal_status=readable
+    return
+  fi
+  if output="$(sudo -n env LC_ALL=C journalctl "$@" --no-pager 2>&1)" &&
+     ! grep -qiE 'permission|not seeing messages|not permitted|access denied|no journal files' <<< "$output"; then
+    journal_text="$output"
+    journal_status=readable
+  else
+    journal_text=""
+    journal_status=unknown
+  fi
+}
+read_journal -u ananicy-cpp -n 80
+errs="$(printf '%s\n' "$journal_text" | awk 'tolower($0) ~ /error|failed|fatal|invalid|mismatch/ && tolower($0) !~ /cgroup .* already exists/ {if (++n <= 5) print}')"
+
 if [ "${SRPS_JSON:-0}" = "1" ]; then
   j_active(){ systemctl is-active --quiet "$1" 2>/dev/null && echo true || echo false; }
   j_file(){ [ -f "$1" ] && echo true || echo false; }
-  an_errs="[]"
-  if command -v journalctl >/dev/null 2>&1; then
-    mapfile -t ERR_LINES < <(journalctl -u ananicy-cpp -n 80 --no-pager 2>/dev/null | grep -i -E 'error|invalid|mismatch' | head -5)
-    # Filter out benign cgroup-exists warnings, keep others
-    filtered=()
-    for line in "${ERR_LINES[@]}"; do
-      echo "$line" | grep -qi "cgroup .* already exists" && continue
-      filtered+=("$line")
-    done
-    if [ ${#filtered[@]} -gt 0 ]; then
-      an_errs="["
-      first=1
-      for line in "${filtered[@]}"; do
-        esc=$(printf '%s' "$line" | sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g')
-        [ $first -eq 1 ] || an_errs+=","
-        an_errs+="\"$esc\""
-        first=0
-      done
-      an_errs+="]"
-    fi
+  an_errs="null"
+  if [ "$journal_status" = readable ]; then
+    an_errs="["
+    first=1
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      # JSON requires escaping backslashes, quotes and control characters.
+      esc=${line//\\/\\\\}
+      esc=${esc//\"/\\\"}
+      esc=${esc//$'\t'/\\t}
+      esc=${esc//$'\r'/\\r}
+      [ "$first" -eq 1 ] || an_errs+=","
+      an_errs+="\"$esc\""
+      first=0
+    done <<< "$errs"
+    an_errs+="]"
   fi
   cat <<JSON
 {
@@ -1595,6 +1647,7 @@ if [ "${SRPS_JSON:-0}" = "1" ]; then
     "ananicy_cpp": $(j_active ananicy-cpp)
   },
   "ananicy_errors": $an_errs,
+  "ananicy_journal_status": "$journal_status",
   "user_systemd": $( { systemctl --user show-environment >/dev/null 2>&1 && echo true; } || echo false ),
   "configs": {
     "ananicy_rules": $(case "$(root_file_state /etc/ananicy.d/zz-srps/system-resource-protection.rules)" in present) echo true;; absent) echo false;; *) echo null;; esac),
@@ -1646,11 +1699,12 @@ if [ "$(root_file_state /etc/ananicy.d/00-default/99-system-resource-protection.
 if [ -f /etc/sysctl.d/99-system-resource-protection.conf ]; then echo "sysctl config present"; else echo "sysctl config missing"; fi
 
 section "ananicy recent errors (last 50 lines)"
-if command -v journalctl >/dev/null 2>&1; then
-  errs=$(journalctl -u ananicy-cpp -n 80 --no-pager 2>/dev/null | grep -i -E 'error|invalid|mismatch' | grep -vi 'cgroup .* already exists' | head -5)
-  if [ -z "$errs" ]; then echo "none seen"; else echo "$errs"; fi
+if [ "$journal_status" != readable ]; then
+  echo "unknown: journal not readable or no accessible evidence as $(id -un); run: sudo srps-doctor"
+elif [ -z "$errs" ]; then
+  echo "none seen"
 else
-  echo "journalctl not available"
+  printf '%s\n' "$errs"
 fi
 
 section "permissions & groups"
@@ -1666,7 +1720,13 @@ else
 fi
 
 section "recent errors"
-journalctl -p err -b -n 20 --no-pager 2>/dev/null || true
+journal_status=unknown
+read_journal -p err -b -n 20
+if [ "$journal_status" = readable ]; then
+  printf '%s\n' "$journal_text"
+else
+  echo "unknown: system journal evidence unavailable; run: sudo srps-doctor"
+fi
 
 section "recommendations"
 echo "- Disable gamemoded if scheduling conflicts appear"
@@ -2039,6 +2099,17 @@ configure_shell_aliases() {
 
 # --------------- Final Summary (Install) ---------------------
 show_final_summary_install() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        print_info "PLAN COMPLETE (service health not verified)"
+        return
+    fi
+    if [ "$ENABLE_ANANICY" -eq 1 ]; then
+        ananicy_cpp_installed || { print_warning "SETUP FAILED: ananicy-cpp cannot load/run"; return 1; }
+        if [ "$HAS_SYSTEMD" -eq 1 ] && ! srps_service_stable; then
+            print_warning "SETUP FAILED: required ananicy-cpp service is unhealthy"
+            return 1
+        fi
+    fi
     echo -e "\n${CYAN}${BOLD}Service status summary:${NC}"
 
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
