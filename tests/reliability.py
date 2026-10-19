@@ -77,6 +77,43 @@ ananicy_cpp_installed''')
         r=self.installer(['ananicy_cpp_bin','ananicy_cpp_installed','srps_service_stable','show_final_summary_install'], 'DRY_RUN=0; ENABLE_ANANICY=1; HAS_SYSTEMD=1; show_final_summary_install')
         self.assertNotEqual(r.returncode,0)
         self.assertNotIn('SETUP COMPLETE',r.stdout)
+    def test_start_clears_exhausted_start_limit(self):
+        # A unit that crash-looped into its start limit refuses manual starts
+        # until reset-failed clears the limit; the start must not die on it.
+        (self.root/'start-limit-hit').write_text('')
+        self.mock('sudo','"$@"')
+        self.mock('systemctl', '''echo "$*" >> "$MOCK_ROOT/calls"
+case "$1" in
+reset-failed) rm -f "$MOCK_ROOT/start-limit-hit" ;;
+enable|restart) [ ! -e "$MOCK_ROOT/start-limit-hit" ] || exit 1 ;;
+show) printf 'ActiveState=active\\nSubState=running\\nExecMainStatus=0\\nNRestarts=0\\nExecMainStartTimestampMonotonic=100\\n' ;;
+esac''')
+        names=['srps_service_stable','srps_start_ananicy_service']
+        r=self.installer(names,'srps_start_ananicy_service; echo "startup=$SRPS_STARTUP_NRESTARTS"')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertIn('startup=NRestarts=0',r.stdout)
+        calls=(self.root/'calls').read_text().splitlines()
+        self.assertEqual(calls[:3],['reset-failed ananicy-cpp','enable --now ananicy-cpp','restart ananicy-cpp'])
+        # Without the reset, the same unit is refused and the installer stops.
+        (self.root/'start-limit-hit').write_text('')
+        self.mock('systemctl', '''case "$1" in
+reset-failed) exit 1 ;;
+enable|restart) [ ! -e "$MOCK_ROOT/start-limit-hit" ] || exit 1 ;;
+esac''')
+        r=self.installer(names,'srps_start_ananicy_service')
+        self.assertNotEqual(r.returncode,0)
+        self.assertIn('Failed to enable/start',r.stderr)
+    def test_summary_detects_restart_after_startup(self):
+        names=['ananicy_cpp_bin','ananicy_cpp_installed','srps_service_stable','show_final_summary_install']
+        colors='CYAN= BOLD= NC= GREEN= RED= YELLOW= MAGENTA= SHELL_RC=/sandbox/rc; '
+        self.env['RESTARTS']='1'
+        r=self.installer(names, colors+'DRY_RUN=0; ENABLE_ANANICY=1; HAS_SYSTEMD=1; SRPS_STARTUP_NRESTARTS=NRestarts=0; show_final_summary_install')
+        self.assertNotEqual(r.returncode,0)
+        self.assertIn('restarted after startup verification',r.stdout+r.stderr)
+        self.assertNotIn('SETUP COMPLETE',r.stdout)
+        r=self.installer(names, colors+'DRY_RUN=0; ENABLE_ANANICY=1; HAS_SYSTEMD=1; SRPS_STARTUP_NRESTARTS=NRestarts=1; show_final_summary_install')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertIn('SETUP COMPLETE',r.stdout)
     def test_healthy_summary_and_plan(self):
         names=['ananicy_cpp_bin','ananicy_cpp_installed','srps_service_stable','show_final_summary_install']
         colors='CYAN= BOLD= NC= GREEN= RED= YELLOW= MAGENTA= SHELL_RC=/sandbox/rc; '
@@ -103,6 +140,17 @@ ananicy_cpp_installed''')
             self.mock('journalctl',body)
             self.assertIn('unknown:',self.doctor())
             self.assertIsNone(self.doctor(True)['ananicy_errors'])
+    def test_log_lines_mentioning_permissions_are_evidence(self):
+        # Access problems are reported on stderr. Log content that mentions
+        # permissions is readable evidence, for ananicy and for system errors.
+        lines=['Failed to set nice: Operation not permitted','error writing cgroup: Permission denied']
+        self.mock('journalctl', "printf '%s\\n' " + ' '.join(repr(l) for l in lines))
+        doc=self.doctor(True)
+        self.assertEqual(doc['ananicy_errors'],lines)
+        self.assertEqual(doc['ananicy_journal_status'],'readable')
+        text=self.doctor()
+        self.assertNotIn('unknown:',text)
+        self.assertEqual(text.count(lines[1]),2)
     def test_sudo_journal_recovery(self):
         self.mock('journalctl','exit 1')
         self.mock('sudo','if [ "${2:-}" = env ]; then echo "Worker initialized"; else exit 1; fi')

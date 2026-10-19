@@ -43,6 +43,10 @@ esac
 CONFIG_FILE="${SRPS_CONFIG_FILE:-./srps.conf}"
 
 HAS_SYSTEMD=0
+# ananicy-cpp's automatic-restart count ("NRestarts=N") as of the last stable
+# observation, and as of startup verification (see srps_start_ananicy_service).
+SRPS_SERVICE_NRESTARTS=""
+SRPS_STARTUP_NRESTARTS=""
 IS_WSL=0
 HAS_APT=0
 APT_UPDATED=0
@@ -349,6 +353,25 @@ srps_service_stable() {
         previous="$snapshot"
         [ "$i" -eq 5 ] || sleep 2
     done
+    SRPS_SERVICE_NRESTARTS="$(grep -E '^NRestarts=' <<< "$previous")"
+}
+
+# Start (or restart) ananicy-cpp and require it to stay up; exits on failure.
+# A unit that crash-looped into its start limit refuses manual starts until
+# the limit window passes, so clear that state (and the rate-limit counter)
+# first: the binary has just been validated or rebuilt. Restart even a running
+# unit so updated rules and a rebuilt binary load. The restart count observed
+# here lets the final summary catch a crash-restart that happens after this
+# window and is followed by a stable new process.
+srps_start_ananicy_service() {
+    sudo systemctl reset-failed ananicy-cpp >/dev/null 2>&1 || true
+    if ! sudo systemctl enable --now ananicy-cpp >/dev/null 2>&1; then
+        die "Failed to enable/start ananicy-cpp; check with: sudo systemctl status ananicy-cpp"
+    fi
+    if ! sudo systemctl restart ananicy-cpp >/dev/null 2>&1 || ! srps_service_stable; then
+        die "ananicy-cpp did not remain running; inspect sudo systemctl status ananicy-cpp and sudo journalctl -u ananicy-cpp"
+    fi
+    SRPS_STARTUP_NRESTARTS="$SRPS_SERVICE_NRESTARTS"
 }
 
 install_ananicy_cpp() {
@@ -684,11 +707,7 @@ EOF
             :
         else
             sudo systemctl daemon-reload
-            if sudo systemctl enable --now ananicy-cpp >/dev/null 2>&1; then
-            # Restart even an existing unit so updated rules and rebuilt binaries load.
-            if ! sudo systemctl restart ananicy-cpp >/dev/null 2>&1 || ! srps_service_stable; then
-                die "ananicy-cpp did not remain running; inspect sudo systemctl status ananicy-cpp and sudo journalctl -u ananicy-cpp"
-            fi
+            srps_start_ananicy_service
             local rule_count="?"
             if command -v journalctl >/dev/null 2>&1; then
                 rule_count="$(sudo journalctl -u ananicy-cpp -n 50 --no-pager 2>/dev/null | grep -oP 'Worker initialized with \K[0-9]+' | tail -1 || echo '?')"
@@ -711,9 +730,6 @@ EOF
             if systemctl is-active --quiet gamemoded.service 2>/dev/null; then
                 print_warning "gamemoded.service is active. GameMode and ananicy-cpp both renice processes and can conflict; if you see odd scheduling behaviour, consider disabling one of them."
             fi
-        else
-            die "Failed to enable/start ananicy-cpp; check with: sudo systemctl status ananicy-cpp"
-        fi
         fi
     else
         print_warning "Skipping ananicy-cpp service enable (no systemd detected)."
@@ -1597,18 +1613,29 @@ fi
 # warning that the caller cannot see system messages. Empty output is ambiguous.
 journal_status=unknown
 journal_text=""
-read_journal() {
-  local output
-  if output="$(LC_ALL=C journalctl "$@" --no-pager 2>&1)" &&
-     ! grep -qiE 'permission|not seeing messages|not permitted|access denied|no journal files' <<< "$output" &&
-     [ -n "$output" ] && ! grep -q '^-- No entries --$' <<< "$output"; then
+# journal_attempt CMD... -> 0 with journal_text set when CMD read the journal.
+# journalctl reports access problems on stderr, so only stderr is checked for
+# them: a log line such as "Operation not permitted" is evidence to report,
+# not a sign that the journal was unreadable.
+journal_attempt() {
+  local err_file output
+  err_file="$(mktemp)" || return 1
+  if output="$("$@" 2>"$err_file")" &&
+     ! grep -qiE 'permission|not seeing messages|not permitted|access denied|no journal files' "$err_file"; then
+    rm -f "$err_file"
     journal_text="$output"
+    return 0
+  fi
+  rm -f "$err_file"
+  return 1
+}
+read_journal() {
+  if journal_attempt env LC_ALL=C journalctl "$@" --no-pager &&
+     [ -n "$journal_text" ] && ! grep -q '^-- No entries --$' <<< "$journal_text"; then
     journal_status=readable
     return
   fi
-  if output="$(sudo -n env LC_ALL=C journalctl "$@" --no-pager 2>&1)" &&
-     ! grep -qiE 'permission|not seeing messages|not permitted|access denied|no journal files' <<< "$output"; then
-    journal_text="$output"
+  if journal_attempt sudo -n env LC_ALL=C journalctl "$@" --no-pager; then
     journal_status=readable
   else
     journal_text=""
@@ -2105,9 +2132,18 @@ show_final_summary_install() {
     fi
     if [ "$ENABLE_ANANICY" -eq 1 ]; then
         ananicy_cpp_installed || { print_warning "SETUP FAILED: ananicy-cpp cannot load/run"; return 1; }
-        if [ "$HAS_SYSTEMD" -eq 1 ] && ! srps_service_stable; then
-            print_warning "SETUP FAILED: required ananicy-cpp service is unhealthy"
-            return 1
+        if [ "$HAS_SYSTEMD" -eq 1 ]; then
+            if ! srps_service_stable; then
+                print_warning "SETUP FAILED: required ananicy-cpp service is unhealthy"
+                return 1
+            fi
+            # A crash after startup verification, followed by a stable
+            # automatic restart, passes the window above but raises NRestarts.
+            if [ -n "${SRPS_STARTUP_NRESTARTS:-}" ] &&
+               [ "${SRPS_SERVICE_NRESTARTS:-}" != "$SRPS_STARTUP_NRESTARTS" ]; then
+                print_warning "SETUP FAILED: ananicy-cpp restarted after startup verification (${SRPS_STARTUP_NRESTARTS} -> ${SRPS_SERVICE_NRESTARTS:-unknown}); inspect sudo journalctl -u ananicy-cpp"
+                return 1
+            fi
         fi
     fi
     echo -e "\n${CYAN}${BOLD}Service status summary:${NC}"
