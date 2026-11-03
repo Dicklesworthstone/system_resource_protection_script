@@ -13,7 +13,13 @@ documented at their actual position in the linear history.
 
 ## [Unreleased]
 
-Nothing yet.
+- Preserve explicit `TMPDIR` and `CARGO_TARGET_DIR` values in Bash and Zsh. Leave
+  Cargo targets project-controlled unless an operator deliberately configures a
+  global override. Automatic scratch selection now requires evidence of a
+  persistent filesystem separate from the OS filesystem, and prefers the build
+  volume's existing scratch directory over `/data/tmp`. Add user-owned storage
+  configuration that survives managed-block refreshes, with an option to keep
+  resource aliases without applying storage defaults. (#10)
 
 ## [v1.4.3](https://github.com/Dicklesworthstone/system_resource_protection_script/releases/tag/v1.4.3) -- 2026-10-13 (Release)
 

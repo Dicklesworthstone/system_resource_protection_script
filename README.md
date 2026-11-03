@@ -108,6 +108,51 @@ Re-running is safe: idempotent writes, backups preserved, services restarted as 
 - Plan-only: `install.sh --plan` or `DRY_RUN=1`.
 - Go TUI JSON file stream: `SRPS_SYSMONI_JSON_FILE=/tmp/sysmoni.ndjson` and toggle inside TUI with `o`.
 
+### Build storage in Bash and Zsh
+
+SRPS preserves an already-set `TMPDIR` or `CARGO_TARGET_DIR`, including an explicit
+empty value. An unset `CARGO_TARGET_DIR` stays unset so Cargo can use repository
+configuration and project `target` directories or symlinks. Resource-control
+aliases do not require a global Cargo target or a change to temporary storage.
+
+For persistent defaults, create your own
+`${XDG_CONFIG_HOME:-$HOME/.config}/srps/storage.sh` (or select a file with
+`SRPS_STORAGE_CONFIG` in your shell configuration before the SRPS block):
+
+```bash
+# The directory must already exist and be writable/searchable by this user.
+SRPS_TMPDIR=/data/build/tmp/shell
+
+# Optional: set this ONLY if you intentionally want a global Cargo target.
+# SRPS_CARGO_TARGET_DIR=/data/build/cargo-target
+```
+
+This is trusted shell code, sourced by both Bash and Zsh at startup; use syntax
+both understand. SRPS never creates or rewrites this file. These defaults fill
+only unset standard variables, so values from the incoming environment or
+earlier shell configuration take precedence. Ordinary assignments placed after
+the managed block also keep their usual shell precedence. Installer environment
+variables are **not** captured into the rc file: ACFS uses a private, temporary
+`TMPDIR` during verified installation and removes it afterward.
+
+To retain the aliases while disabling all SRPS storage defaults, set
+`SRPS_STORAGE_POLICY=preserve` in that file or before the managed block. An empty
+`SRPS_TMPDIR` disables automatic temporary-directory selection alone. A nonempty
+but unavailable `SRPS_TMPDIR` produces a warning and leaves `TMPDIR` unset; SRPS
+does not silently substitute another volume or create directories.
+An explicitly selected storage config that is missing or unreadable also leaves
+storage unchanged with a warning.
+
+Without explicit configuration, SRPS considers `/data/build/tmp/shell` first,
+then `/data/tmp`, **only when `TMPDIR` is unset**. A candidate must already be
+writable/searchable, have a device identity different from `/` according to both
+`stat` and `findmnt`, and have a recognized persistent filesystem type (ext2/3/4,
+XFS, Btrfs, or ZFS). A directory on the OS filesystem, a bind mount of it, tmpfs,
+an unknown filesystem, or missing/failed probes cannot qualify. If no candidate
+qualifies, `TMPDIR` stays unset and tools use their host defaults. Filesystem
+separation does not establish available space or quota headroom; use explicit
+configuration for your quota-managed build directory.
+
 ---
 
 ## 🖥️ Live System Monitor (`sysmoni`)

@@ -2047,19 +2047,89 @@ if command -v check-throttled >/dev/null 2>&1; then
   alias throttled='check-throttled'
 fi
 
-# Rust / Cargo env
-# Where a host has /data/tmp (a separate disk), TMPDIR and CARGO_TARGET_DIR
-# live there rather than on /tmp: /tmp is tmpfs on many hosts, and tmpfs eats
-# RAM under agent build load. Do not point them back at /tmp on such hosts.
-# Elsewhere /data/tmp does not exist, and exporting it would break mktemp and
-# every tool that uses TMPDIR, so keep the host's TMPDIR (default /tmp).
-if [ -d /data/tmp ] && [ -w /data/tmp ]; then
-  export TMPDIR=/data/tmp
-  export CARGO_TARGET_DIR=/data/tmp/cargo-target
-else
-  export TMPDIR="${TMPDIR:-/tmp}"
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/cargo-target}"
-fi
+# Build storage defaults are independent of the aliases above. This user-owned
+# configuration is read at shell startup and is never rewritten by SRPS.
+# Set SRPS_STORAGE_POLICY=preserve to disable all SRPS storage defaults.
+_srps_storage_setup() {
+  local srps_config srps_candidate srps_root_device srps_device
+  local srps_root_mount srps_mount srps_fstype srps_extra srps_mount_info
+  srps_config="${SRPS_STORAGE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/srps/storage.sh}"
+  if [ -e "$srps_config" ] || [ -L "$srps_config" ] || [ -n "${SRPS_STORAGE_CONFIG:-}" ]; then
+    if [ ! -f "$srps_config" ] || [ ! -r "$srps_config" ]; then
+      printf 'SRPS: storage configuration is unavailable; leaving build storage unchanged: %s\n' "$srps_config" >&2
+      return 0
+    fi
+    if ! . "$srps_config"; then
+      printf 'SRPS: could not load storage configuration: %s\n' "$srps_config" >&2
+      return 0
+    fi
+  fi
+  case "${SRPS_STORAGE_POLICY:-auto}" in
+    preserve) return 0 ;;
+    auto) ;;
+    *) printf 'SRPS: unknown SRPS_STORAGE_POLICY; leaving build storage unchanged\n' >&2; return 0 ;;
+  esac
+
+  # A global target bypasses Cargo project configuration and target symlinks.
+  # Only an intentional override may create one. Even explicit empty values
+  # of either standard variable belong to the operator and must be preserved.
+  if [ "${CARGO_TARGET_DIR+x}" != x ] && [ -n "${SRPS_CARGO_TARGET_DIR:-}" ]; then
+    export CARGO_TARGET_DIR="$SRPS_CARGO_TARGET_DIR"
+  fi
+  [ "${TMPDIR+x}" != x ] || return 0
+  if [ "${SRPS_TMPDIR+x}" = x ]; then
+    if [ -n "$SRPS_TMPDIR" ]; then
+      if [ -d "$SRPS_TMPDIR" ] && [ -w "$SRPS_TMPDIR" ] && [ -x "$SRPS_TMPDIR" ]; then
+        export TMPDIR="$SRPS_TMPDIR"
+      else
+        printf 'SRPS: configured temporary directory is unavailable; leaving TMPDIR unset: %s\n' "$SRPS_TMPDIR" >&2
+      fi
+    fi
+    return 0
+  fi
+
+  # A name such as /data/tmp says nothing about its backing storage. Require
+  # both filesystem/device probes to establish a persistent filesystem distinct
+  # from /. Bind mounts, tmpfs, missing tools and ambiguous evidence do not qualify.
+  # This establishes filesystem separation, not free space or quota headroom.
+  command -v stat >/dev/null 2>&1 && command -v findmnt >/dev/null 2>&1 || return 0
+  srps_root_device="$(stat -L -c '%d' -- / 2>/dev/null)" || return 0
+  srps_root_mount="$(findmnt --noheadings --raw --output MAJ:MIN --target / 2>/dev/null)" || return 0
+  case "$srps_root_device" in ''|*[!0-9]*) return 0 ;; esac
+  case "$srps_root_mount" in
+    ''|*[!0-9:]*|:*|*:|*:*:*) return 0 ;;
+    *:*) ;;
+    *) return 0 ;;
+  esac
+  for srps_candidate in /data/build/tmp/shell /data/tmp; do
+    [ -d "$srps_candidate" ] && [ -w "$srps_candidate" ] && [ -x "$srps_candidate" ] || continue
+    srps_device="$(stat -L -c '%d' -- "$srps_candidate" 2>/dev/null)" || continue
+    case "$srps_device" in ''|*[!0-9]*) continue ;; esac
+    [ "$srps_device" != "$srps_root_device" ] || continue
+    srps_mount_info="$(findmnt --noheadings --raw --output FSTYPE,MAJ:MIN --target "$srps_candidate" 2>/dev/null)" || continue
+    # Raw findmnt output is a single space-separated record, with no padding.
+    # Reject extra fields/records instead of treating incomplete evidence as safe.
+    case "$srps_mount_info" in *'
+'*) continue ;; esac
+    IFS=' ' read -r srps_fstype srps_mount srps_extra <<SRPS_MOUNT
+$srps_mount_info
+SRPS_MOUNT
+    [ -z "$srps_extra" ] || continue
+    case "$srps_fstype" in ext2|ext3|ext4|xfs|btrfs|zfs) ;; *) continue ;; esac
+    case "$srps_mount" in
+      ''|*[!0-9:]*|:*|*:|*:*:*) continue ;;
+      *:*) ;;
+      *) continue ;;
+    esac
+    [ "$srps_mount" != "$srps_root_mount" ] || continue
+    export TMPDIR="$srps_candidate"
+    break
+  done
+  # With no trustworthy candidate, leave TMPDIR unset for the host/tool default.
+  return 0
+  }
+_srps_storage_setup
+unset -f _srps_storage_setup
 # <<< system_resource_protection_script <<<
 EOF
 }

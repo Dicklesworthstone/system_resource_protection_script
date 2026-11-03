@@ -13,7 +13,8 @@
 #     duplicates, wrong order) is left byte-identical by install AND uninstall.
 #     A `sed '/START/,/END/d'` with the end marker missing deletes to end of file;
 #   - a symlinked rc stays a symlink;
-#   - the block exports TMPDIR=/data/tmp only where /data/tmp is a writable dir.
+#   - absent trustworthy storage evidence, the host's TMPDIR default and Cargo's
+#     project-controlled target are left alone (full matrix: storage_policy.py).
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
@@ -59,7 +60,7 @@ printf 'export FOO=1\n' > "$W/rc"; run >/dev/null
 
 # old block replaced in place, backup kept
 oldblock; cp "$W/rc" "$W/rc.orig"; msg=$(run)
-[ "$(blocks)" = 1 ] && ! grep -q '^export TMPDIR=/tmp$' "$W/rc" && grep -q 'if \[ -d /data/tmp \]' "$W/rc" && ok "old block replaced" || bad "old block not replaced: $msg"
+[ "$(blocks)" = 1 ] && ! grep -q '^export TMPDIR=/tmp$' "$W/rc" && grep -q '^_srps_storage_setup() {' "$W/rc" && ok "old block replaced" || bad "old block not replaced: $msg"
 s=$(grep -n -x -F -- "$START" "$W/rc" | cut -d: -f1); e=$(grep -n -x -F -- "$END" "$W/rc" | cut -d: -f1)
 foo=$(grep -n '^export FOO=1$' "$W/rc" | cut -d: -f1); aft=$(grep -n '^export AFTER=2$' "$W/rc" | cut -d: -f1)
 [ "$foo" -lt "$s" ] && [ "$e" -lt "$aft" ] && ok "block kept its position" || bad "block moved: FOO=$foo block=$s-$e AFTER=$aft"
@@ -102,14 +103,14 @@ printf 'echo "see %s docs"\nexport FOO=1\n' "$START" > "$W/rc"; run >/dev/null
 
 # symlinked rc stays a symlink
 mkdir -p "$W/dot"; oldblock; mv "$W/rc" "$W/dot/bashrc"; ln -s "$W/dot/bashrc" "$W/rc"; run >/dev/null
-[ -L "$W/rc" ] && grep -q 'if \[ -d /data/tmp \]' "$W/dot/bashrc" && ok "symlinked rc stays a symlink" || bad "symlinked rc"
+[ -L "$W/rc" ] && grep -q '^_srps_storage_setup() {' "$W/dot/bashrc" && ok "symlinked rc stays a symlink" || bad "symlinked rc"
 rm -f "$W/rc"
 
-# the block on a host without /data/tmp (path substituted so the test is host-independent)
-bash -c "source '$W/fns.sh'; srps_shell_block" | sed 's#/data/tmp#/nonexistent-srps/tmp#g' > "$W/block-nodata.sh"
-out=$(env -u TMPDIR -u CARGO_TARGET_DIR bash -c "source '$W/block-nodata.sh'; echo \$TMPDIR \$CARGO_TARGET_DIR")
-[ "$out" = "/tmp /tmp/cargo-target" ] && ok "without /data/tmp: TMPDIR defaults to /tmp" || bad "without /data/tmp: $out"
-out=$(TMPDIR=/var/tmp bash -c "source '$W/block-nodata.sh'; echo \$TMPDIR")
+# Missing candidates must leave both variables unset; tools use host defaults.
+bash -c "source '$W/fns.sh'; srps_shell_block" | sed 's#/data/build/tmp/shell#/nonexistent-srps/build#g; s#/data/tmp#/nonexistent-srps/tmp#g' > "$W/block-nodata.sh"
+out=$(env -u TMPDIR -u CARGO_TARGET_DIR -u SRPS_TMPDIR -u SRPS_CARGO_TARGET_DIR -u SRPS_STORAGE_POLICY SRPS_STORAGE_CONFIG="$W/missing-config" bash -c "source '$W/block-nodata.sh'; echo \${TMPDIR+set}unset \${CARGO_TARGET_DIR+set}unset")
+[ "$out" = "unset unset" ] && ok "without storage evidence: host defaults and project Cargo target kept" || bad "without storage evidence: $out"
+out=$(TMPDIR=/var/tmp SRPS_STORAGE_CONFIG="$W/missing-config" bash -c "source '$W/block-nodata.sh'; echo \$TMPDIR")
 [ "$out" = "/var/tmp" ] && ok "without /data/tmp: an existing TMPDIR is kept" || bad "existing TMPDIR: $out"
 
 # uninstall: a good block is removed in place, a damaged file is left alone
