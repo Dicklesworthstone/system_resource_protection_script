@@ -1,0 +1,17 @@
+# Focused shell qualification; full platform/release gates remain separate.
+tools:
+  srps-shell:
+    repo: Dicklesworthstone/system_resource_protection_script
+    checks:
+      - bash -n install.sh && bash -n verify.sh && bash -n tests/rc_block.sh
+      - shellcheck install.sh verify.sh
+      - bash tests/rc_block.sh
+      - python3 tests/storage_policy.py
+      - python3 tests/reliability.py
+      - bash tests/verify_integrity.sh
+      - sha256sum -c SHA256SUMS
+      - git diff --check
+  srps-acfs:
+    repo: Dicklesworthstone/system_resource_protection_script
+    checks:
+      - python3 tests/acfs_reinstall.py

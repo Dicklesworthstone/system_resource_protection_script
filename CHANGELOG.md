@@ -20,6 +20,15 @@ documented at their actual position in the linear history.
   volume's existing scratch directory over `/data/tmp`. Add user-owned storage
   configuration that survives managed-block refreshes, with an option to keep
   resource aliases without applying storage defaults. (#10)
+- Migrate customized legacy storage footers outside the managed shell block,
+  preserving their code through repeated installation and uninstall. Verify the
+  ACFS nightly SRPS call through its actual checksum gate and installer entry
+  point, including transient installer storage cleanup, fresh Bash/Zsh sessions,
+  and rejection of tampered installer bytes. Add reproducible DSR shell and ACFS
+  qualification lanes.
+- Retain different older rc backups before replacing `.srps-bak`, preserving
+  operator settings that an earlier SRPS refresh may already have overwritten.
+  Historical backups are retained for recovery rather than silently reactivated.
 
 ## [v1.4.3](https://github.com/Dicklesworthstone/system_resource_protection_script/releases/tag/v1.4.3) -- 2026-10-13 (Release)
 

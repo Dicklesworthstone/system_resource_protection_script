@@ -153,6 +153,23 @@ qualifies, `TMPDIR` stays unset and tools use their host defaults. Filesystem
 separation does not establish available space or quota headroom; use explicit
 configuration for your quota-managed build directory.
 
+Upgrades recognize the old `# Rust / Cargo env` footer. Unmodified upstream
+defaults are replaced; customized storage code is preserved verbatim immediately
+before the refreshed managed block and is not evaluated by the installer. That
+preserved code remains operator-owned on subsequent reinstalls and uninstall.
+Simple storage-only blocks are handled too. An unrecognized compound custom
+block is left intact with a warning rather than risking loss of operator code.
+Existing `.srps-bak` files are not silently restored: they may contain settings
+that an operator intentionally removed. Before replacing a different previous
+backup, SRPS retains it as `<rc>.srps-bak.<unique suffix>` and reports the path.
+This preserves recovery data from earlier updates while `<rc>.srps-bak` remains
+the immediately preceding rc file. An unchanged reinstall creates no new backup.
+
+Already-running processes retain their old environment. If a parent shell still
+exports legacy paths, set the intended variables in operator configuration or
+start a clean login session; SRPS cannot distinguish an inherited old default
+from an intentional override based on its pathname alone.
+
 ---
 
 ## 🖥️ Live System Monitor (`sysmoni`)
@@ -247,7 +264,29 @@ Safe to re-run the installer any time; it re-applies configs, restores backups o
 
 - Go TUI lives in `cmd/sysmoni`; static builds shipped via releases (binary URL used by installer).
 - Legacy bash sysmoni remains embedded for fallback.
-- CI runs lint, nix flake check, docker toolbox build, and Go build/test.
+- DSR is the only automation path; GitHub Actions must not be run (see
+  [AGENTS.md](AGENTS.md)). Existing workflow definitions remain available as local
+  DSR/`act` inputs for the broader Nix, Docker, and Go qualification gates.
+- Run the storage/installer shell qualification lane with Bash, Zsh, Python 3,
+  ShellCheck, and DSR installed:
+
+  ```bash
+  DSR_CONFIG_DIR="$PWD/.dsr" dsr quality --tool srps-shell --work-dir "$PWD"
+  ```
+
+- Run verified ACFS reinstall coverage against an existing ACFS checkout:
+
+  ```bash
+  SRPS_ACFS_SOURCE=/path/to/agentic_coding_flywheel_setup \
+    DSR_CONFIG_DIR="$PWD/.dsr" dsr quality --tool srps-acfs --work-dir "$PWD"
+  ```
+
+  This offline test executes the real ACFS checksum verifier, target environment,
+  installer entry point, temporary-directory cleanup, and repeated shell-block
+  refreshes. Transport and account-home metadata are fixtures, and an explicit
+  installer config disables host changes. Fresh Bash/Zsh sessions check settings,
+  aliases, and preserved rc content; a corrupted payload must be refused. This
+  lane does not replace privileged Linux/WSL service or full release qualification.
 
 ---
 

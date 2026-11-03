@@ -2006,10 +2006,10 @@ srps_rc_block_lines() {
 # srps_rc_rewrite_block RC START_LINE END_LINE [NEW_BLOCK]
 # Replaces lines START_LINE..END_LINE of RC with NEW_BLOCK, in place, or removes
 # them when NEW_BLOCK is omitted. Lines outside the block keep their order and
-# position. RC is first copied to RC.srps-bak, and the result is written back
-# through the existing file, so a symlinked rc stays a symlink.
+# position. RC is first copied to RC.srps-bak (retaining any different previous
+# backup), and the result is written through RC, so a symlinked rc stays a symlink.
 srps_rc_rewrite_block() {
-    local rc="$1" start="$2" end="$3" new_block="${4:-}" tmp
+    local rc="$1" start="$2" end="$3" new_block="${4:-}" tmp older_backup
     tmp="$(mktemp)"
     {
         if [ "$start" -gt 1 ]; then
@@ -2020,9 +2020,71 @@ srps_rc_rewrite_block() {
         fi
         sed -n "$((end + 1)),\$p" "$rc"
     } > "$tmp"
+    # An earlier SRPS update may already have overwritten an operator's custom
+    # block. Its backup can be the only remaining copy: never discard that copy
+    # just because this installer is now correcting the generated policy.
+    if { [ -e "$rc.srps-bak" ] || [ -L "$rc.srps-bak" ]; } && ! cmp -s "$rc" "$rc.srps-bak"; then
+        older_backup="$(mktemp "$rc.srps-bak.XXXXXX")"
+        cp -p "$rc.srps-bak" "$older_backup"
+        print_info "Retained older shell configuration backup as $older_backup"
+    fi
     cp -p "$rc" "$rc.srps-bak"
     cat "$tmp" > "$rc"
     rm -f "$tmp"
+}
+
+# Recover operator edits to the legacy storage footer without evaluating them.
+# Only the three storage policies actually shipped by SRPS are disposable. A
+# customized footer moves outside the managed markers, where later refreshes
+# (and uninstall) leave it alone. Also accept old abbreviated blocks containing
+# storage assignments only; never guess where an arbitrary shell fragment ends.
+srps_rc_legacy_storage() {
+    local block="$1" footer normalized guarded_defaults
+    if grep -q -x -F '# Rust / Cargo env' <<< "$block"; then
+        footer="$(awk -v end="$SRPS_RC_END" '
+            $0 == end { exit }
+            in_storage { print }
+            $0 == "# Rust / Cargo env" { in_storage = 1 }
+        ' <<< "$block")"
+    elif grep -q -x -F '# Build storage defaults are independent of the aliases above. This user-owned' <<< "$block"; then
+        # Current managed code: operator settings live in storage.sh or outside
+        # these markers. Do not fossilize a previous version of our own defaults.
+        return 0
+    else
+        footer="$(printf '%s\n' "$block" | sed '1d; $d')"
+        if ! printf '%s\n' "$footer" | awk '
+            /^[[:space:]]*(#|$)/ { next }
+            /^[[:space:]]*(export[[:space:]]+)?(TMPDIR|CARGO_TARGET_DIR)=/ { seen = 1; next }
+            /^[[:space:]]*unset[[:space:]]+(TMPDIR|CARGO_TARGET_DIR)([[:space:]]+(TMPDIR|CARGO_TARGET_DIR))?[[:space:]]*$/ { seen = 1; next }
+            { other = 1 }
+            END { exit (!seen || other) }
+        '; then
+            # A nonstandard block may contain compound storage logic. Retain it
+            # intact rather than silently discard an operator's configuration.
+            if sed '/^[[:space:]]*#/d' <<< "$footer" | grep -E '(^|[^[:alnum:]_])(TMPDIR|CARGO_TARGET_DIR)([^[:alnum:]_]|$)' >/dev/null; then
+                return 2
+            fi
+            return 0
+        fi
+    fi
+    normalized="$(printf '%s\n' "$footer" | sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d; s/^[[:space:]]*//; s/[[:space:]]*$//')"
+    case "$normalized" in
+        ''|'export TMPDIR=/tmp
+export CARGO_TARGET_DIR=/tmp/cargo-target'|'export TMPDIR=/data/tmp
+export CARGO_TARGET_DIR=/data/tmp/cargo-target') return 0 ;;
+    esac
+    guarded_defaults="$(cat <<'EOF'
+if [ -d /data/tmp ] && [ -w /data/tmp ]; then
+export TMPDIR=/data/tmp
+export CARGO_TARGET_DIR=/data/tmp/cargo-target
+else
+export TMPDIR="${TMPDIR:-/tmp}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/cargo-target}"
+fi
+EOF
+    )"
+    [ "$normalized" != "$guarded_defaults" ] || return 0
+    printf '%s\n' "$footer"
 }
 
 # The block SRPS keeps in the user's shell rc, between its two marker lines.
@@ -2167,9 +2229,26 @@ configure_shell_aliases() {
             print_success "Shell aliases already present in $SHELL_RC"
             return
         fi
+        local preserved_storage migration_rc=0
+        preserved_storage="$(srps_rc_legacy_storage "$existing_block")" || migration_rc=$?
+        if [ "$migration_rc" -ne 0 ]; then
+            print_warning "$SHELL_RC has unrecognized custom storage logic in its SRPS block. Leaving it untouched to preserve operator settings; move that logic outside the markers or into your SRPS storage.sh before refreshing."
+            return
+        fi
         if [ "$DRY_RUN" -eq 1 ]; then
             print_info "[plan mode] Would update the SRPS block in $SHELL_RC"
+            if [ -n "$preserved_storage" ]; then
+                print_info "[plan mode] Would preserve custom build-storage settings outside the managed block."
+            fi
             return
+        fi
+        if [ -n "$preserved_storage" ]; then
+            print_info "Preserving custom build-storage settings outside the managed block in $SHELL_RC"
+            srps_block="$(printf '%s\n%s\n%s\n\n%s' \
+                '# SRPS preserved operator build storage (not managed; edit here or use storage.sh).' \
+                "$preserved_storage" \
+                '# End preserved operator build storage.' \
+                "$srps_block")"
         fi
         print_info "Updating the SRPS block in $SHELL_RC in place (it differs from this installer's block; previous file kept as $SHELL_RC.srps-bak)"
         srps_rc_rewrite_block "$SHELL_RC" "$block_start" "$block_end" "$srps_block"
