@@ -13,22 +13,26 @@ documented at their actual position in the linear history.
 
 ## [Unreleased]
 
-- Preserve explicit `TMPDIR` and `CARGO_TARGET_DIR` values in Bash and Zsh. Leave
-  Cargo targets project-controlled unless an operator deliberately configures a
-  global override. Automatic scratch selection now requires evidence of a
-  persistent filesystem separate from the OS filesystem, and prefers the build
-  volume's existing scratch directory over `/data/tmp`. Add user-owned storage
-  configuration that survives managed-block refreshes, with an option to keep
-  resource aliases without applying storage defaults. (#10)
-- Migrate customized legacy storage footers outside the managed shell block,
-  preserving their code through repeated installation and uninstall. Verify the
-  ACFS nightly SRPS call through its actual checksum gate and installer entry
-  point, including transient installer storage cleanup, fresh Bash/Zsh sessions,
-  and rejection of tampered installer bytes. Add reproducible DSR shell and ACFS
-  qualification lanes.
-- Retain different older rc backups before replacing `.srps-bak`, preserving
-  operator settings that an earlier SRPS refresh may already have overwritten.
-  Historical backups are retained for recovery rather than silently reactivated.
+## [v1.4.4](https://github.com/Dicklesworthstone/system_resource_protection_script/releases/tag/v1.4.4) -- 2026-11-20 (Release)
+
+Installer service-startup reliability, build-storage preservation, `srps-doctor` journal evidence fixes, and `sysmoni` Go dependency upgrades (`gopsutil/v4`, `bubbletea` v1.3.10, `golang.org/x/sys` v0.50.0).
+
+### Installer & helper fixes
+- `srps_start_ananicy_service` no longer runs `systemctl enable --now ananicy-cpp` followed immediately by `systemctl restart ananicy-cpp`, which could SIGTERM the starting daemon before it released `/dev/shm/AnanicyCppMutex` and leave subsequent starts failing with `Ananicy Cpp is already running!`. Both the installer and `srps-reload-rules` now stop any existing instance, reset failed/start-limit state, safely remove an orphaned regular mutex file only when no `ananicy-cpp` process is confirmed running (refusing symlinks and failing safe on lookup errors), enable without `--now`, and start once (#11, [453dceb](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/453dceb2958c3462ff9831eacfe5a6a07b4384df)).
+- Installer health verification now validates that `ananicy-cpp` can load and run, clears exhausted systemd start limits via `systemctl reset-failed`, verifies stability over a bounded observation window, catches late post-startup restarts via `NRestarts` tracking, and refuses to print the setup-complete banner when service verification fails (#8, [322d1a9](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/322d1a91a0fdef4db35882a2b89cc338f3a96b62), [f23a66c](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/f23a66c4d4c4c97bfb8fb4db4ded30f6614c8ecb)).
+- `srps-doctor` now inspects journal access errors on `stderr` only so readable journal log lines mentioning permissions are surfaced as diagnostic evidence rather than masked as unreadable (#9, [322d1a9](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/322d1a91a0fdef4db35882a2b89cc338f3a96b62), [f23a66c](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/f23a66c4d4c4c97bfb8fb4db4ded30f6614c8ecb)).
+- Preserve explicit `TMPDIR` and `CARGO_TARGET_DIR` values in Bash and Zsh. Leave Cargo targets project-controlled unless an operator deliberately configures a global override. Automatic scratch selection now requires evidence of a persistent filesystem separate from the OS filesystem, and prefers `/data/build/tmp/shell` over `/data/tmp`. Add user-owned storage configuration (`~/.config/srps/storage.sh` / `SRPS_STORAGE_CONFIG`) that survives managed-block refreshes, with `SRPS_STORAGE_POLICY=preserve` to keep resource aliases without applying storage defaults (#10, [33205e5](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/33205e53c08a3f1f1c2b531858b8e2ea9fe26ce9)).
+- Migrate customized legacy storage footers outside the managed shell block verbatim without evaluating them, retain different older `.srps-bak` backups before overwriting, and add reproducible DSR shell and ACFS verified-reinstall qualification lanes (#10, [07621de](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/07621deb5a93abe2c4b60a0f336e79870ff9749a)).
+- Document permanent DSR-only automation policy in `AGENTS.md` ([ec69662](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/ec69662cf5e13dc5ff0d6dbd2e4d12ddb5c82b1a)).
+
+### `sysmoni` & Go dependencies
+- Migrated `internal/sampler` from `github.com/shirou/gopsutil/v3` (`v3.23.12`) to `github.com/shirou/gopsutil/v4` (`v4.26.10`), dropping the legacy `go-m1cpu` CGo dependency ([5df529d](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/5df529d8ff242d5cd2dbefa4451d2e77d2d682db)).
+- Updated `github.com/charmbracelet/bubbletea` (`v1.3.4` -> `v1.3.10`) and transitive Go modules including `golang.org/x/sys` (`v0.30.0` -> `v0.50.0`, resolving `GO-2026-5024`), `golang.org/x/text` (`v0.3.8` -> `v0.44.0`), `charmbracelet/x/ansi` (`v0.11.10`), `charmbracelet/x/cellbuf` (`v0.0.15`), `charmbracelet/colorprofile` (`v0.4.3`), `charmbracelet/x/term` (`v0.2.2`), `ebitengine/purego` (`v0.11.3`), `mattn/go-runewidth` (`v0.0.31`), and `xo/terminfo` (`v1.3.1`). `govulncheck` reports 0 vulnerabilities across all modules and Go 1.26.11 stdlib.
+- Added unit tests and a dashboard render benchmark in `internal/ui/ui_test.go`.
+
+### Packaging & tests
+- Updated `HomebrewFormula/srps.rb` for `v1.4.3` ([46054a3](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/46054a31a75c068b782a54f6f7feee5a6baf3006)) and updated `tests/smoke.sh` heredoc extraction to retain trailing newlines during rule-pruning checks ([453dceb](https://github.com/Dicklesworthstone/system_resource_protection_script/commit/453dceb2958c3462ff9831eacfe5a6a07b4384df)).
+- Synchronized `SHA256SUMS` with `install.sh` and `verify.sh`.
 
 ## [v1.4.3](https://github.com/Dicklesworthstone/system_resource_protection_script/releases/tag/v1.4.3) -- 2026-10-13 (Release)
 
