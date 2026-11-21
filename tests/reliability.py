@@ -82,27 +82,117 @@ ananicy_cpp_installed''')
         # until reset-failed clears the limit; the start must not die on it.
         (self.root/'start-limit-hit').write_text('')
         self.mock('sudo','"$@"')
+        self.mock('pgrep','exit 1')
+        self.env['SRPS_ANANICY_MUTEX']=str(self.root/'nonexistent-mutex')
         self.mock('systemctl', '''echo "$*" >> "$MOCK_ROOT/calls"
 case "$1" in
+stop|enable) exit 0 ;;
 reset-failed) rm -f "$MOCK_ROOT/start-limit-hit" ;;
-enable|restart) [ ! -e "$MOCK_ROOT/start-limit-hit" ] || exit 1 ;;
+start) [ ! -e "$MOCK_ROOT/start-limit-hit" ] || exit 1 ;;
 show) printf 'ActiveState=active\\nSubState=running\\nExecMainStatus=0\\nNRestarts=0\\nExecMainStartTimestampMonotonic=100\\n' ;;
 esac''')
-        names=['srps_service_stable','srps_start_ananicy_service']
+        names=['srps_service_stable','srps_ananicy_process_running','srps_clear_stale_ananicy_mutex','srps_start_ananicy_service']
         r=self.installer(names,'srps_start_ananicy_service; echo "startup=$SRPS_STARTUP_NRESTARTS"')
         self.assertEqual(r.returncode,0,r.stderr)
         self.assertIn('startup=NRestarts=0',r.stdout)
         calls=(self.root/'calls').read_text().splitlines()
-        self.assertEqual(calls[:3],['reset-failed ananicy-cpp','enable --now ananicy-cpp','restart ananicy-cpp'])
+        self.assertEqual(calls[:4],['stop ananicy-cpp','reset-failed ananicy-cpp','enable ananicy-cpp','start ananicy-cpp'])
         # Without the reset, the same unit is refused and the installer stops.
         (self.root/'start-limit-hit').write_text('')
         self.mock('systemctl', '''case "$1" in
+stop|enable) exit 0 ;;
 reset-failed) exit 1 ;;
-enable|restart) [ ! -e "$MOCK_ROOT/start-limit-hit" ] || exit 1 ;;
+start) [ ! -e "$MOCK_ROOT/start-limit-hit" ] || exit 1 ;;
 esac''')
         r=self.installer(names,'srps_start_ananicy_service')
         self.assertNotEqual(r.returncode,0)
-        self.assertIn('Failed to enable/start',r.stderr)
+        self.assertIn('did not remain running',r.stderr)
+    def test_start_avoids_enable_now_restart_race_and_clears_stale_mutex(self):
+        # Issue #11: `enable --now` followed immediately by `restart` can kill
+        # ananicy-cpp before it releases /dev/shm/AnanicyCppMutex, leaving every
+        # subsequent start failing with "Ananicy Cpp is already running!".
+        mutex=self.root/'AnanicyCppMutex'
+        mutex.write_text('')
+        self.mock('sudo','"$@"')
+        self.mock('pgrep','exit 1')
+        self.mock('systemctl', '''echo "$*" >> "$MOCK_ROOT/calls"
+case "$1" in
+stop|reset-failed|enable) exit 0 ;;
+start)
+    if [ -e "$SRPS_ANANICY_MUTEX" ]; then
+        echo "Ananicy Cpp is already running!" >&2
+        exit 1
+    fi
+    ;;
+show) printf 'ActiveState=active\\nSubState=running\\nExecMainStatus=0\\nNRestarts=0\\nExecMainStartTimestampMonotonic=100\\n' ;;
+esac''')
+        self.env['SRPS_ANANICY_MUTEX']=str(mutex)
+        names=['srps_service_stable','srps_ananicy_process_running','srps_clear_stale_ananicy_mutex','srps_start_ananicy_service']
+        r=self.installer(names,'srps_start_ananicy_service')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertFalse(mutex.exists(),'stale mutex should have been cleared before start')
+        calls=(self.root/'calls').read_text().splitlines()
+        self.assertNotIn('enable --now ananicy-cpp',calls)
+        self.assertNotIn('restart ananicy-cpp',calls)
+        self.assertEqual(calls[:4],['stop ananicy-cpp','reset-failed ananicy-cpp','enable ananicy-cpp','start ananicy-cpp'])
+    def test_stale_mutex_cleanup_safety_guards(self):
+        # Never remove the mutex if ananicy-cpp is running, if the path is a
+        # symlink, or if process lookup returns an error (>=2).
+        self.mock('sudo','"$@"')
+        names=['srps_ananicy_process_running','srps_clear_stale_ananicy_mutex']
+
+        live=self.root/'live-mutex'
+        live.write_text('')
+        self.mock('pgrep','exit 0')
+        self.env['SRPS_ANANICY_MUTEX']=str(live)
+        r=self.installer(names,'srps_clear_stale_ananicy_mutex')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertTrue(live.exists(),'mutex must be kept while ananicy-cpp is running')
+
+        target=self.root/'real-file'
+        target.write_text('keep')
+        link=self.root/'link-mutex'
+        link.symlink_to(target)
+        self.mock('pgrep','exit 1')
+        self.env['SRPS_ANANICY_MUTEX']=str(link)
+        r=self.installer(names,'srps_clear_stale_ananicy_mutex')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertTrue(link.is_symlink(),'symlink mutex path must not be removed')
+        self.assertEqual(target.read_text(),'keep')
+        self.assertIn('non-regular',r.stderr)
+
+        err_mutex=self.root/'err-mutex'
+        err_mutex.write_text('')
+        self.mock('pgrep','exit 2')
+        self.env['SRPS_ANANICY_MUTEX']=str(err_mutex)
+        r=self.installer(names,'srps_clear_stale_ananicy_mutex')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertTrue(err_mutex.exists(),'mutex must be kept when process lookup errors')
+        self.assertIn('Cannot verify',r.stderr)
+    def test_reload_rules_clears_stale_mutex(self):
+        reload_script=SOURCE.split('sudo tee "$srps_reload" >/dev/null << \'EOF\'\n')[1].split('\nEOF')[0]
+        mutex=self.root/'reload-mutex'
+        mutex.write_text('')
+        self.mock('sudo','"$@"')
+        self.mock('pgrep','exit 1')
+        self.mock('systemctl', '''echo "$*" >> "$MOCK_ROOT/reload-calls"
+case "$1" in
+daemon-reload|stop|reset-failed) exit 0 ;;
+start)
+    if [ -e "$SRPS_ANANICY_MUTEX" ]; then
+        echo "Ananicy Cpp is already running!" >&2
+        exit 1
+    fi
+    ;;
+esac''')
+        self.env['SRPS_ANANICY_MUTEX']=str(mutex)
+        self.env['SRPS_JSON']='1'
+        r=self.run_shell(reload_script)
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertFalse(mutex.exists(),'srps-reload-rules should clear stale mutex before start')
+        self.assertEqual(json.loads(r.stdout)['restarted'],True)
+        calls=(self.root/'reload-calls').read_text().splitlines()
+        self.assertEqual(calls,['daemon-reload','stop ananicy-cpp','reset-failed ananicy-cpp','start ananicy-cpp'])
     def test_summary_detects_restart_after_startup(self):
         names=['ananicy_cpp_bin','ananicy_cpp_installed','srps_service_stable','show_final_summary_install']
         colors='CYAN= BOLD= NC= GREEN= RED= YELLOW= MAGENTA= SHELL_RC=/sandbox/rc; '

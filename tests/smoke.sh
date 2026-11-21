@@ -38,7 +38,7 @@ if not m:
 
 if not m:
     sys.exit(f"missing script for marker: {marker}")
-pathlib.Path(out).write_text(m.group(1))
+pathlib.Path(out).write_text(m.group(1) + "\n")
 PY
   chmod +x "$outfile"
 }
@@ -192,7 +192,7 @@ if [ -n "$PRUNE_SED" ]; then
     # Every name SRPS defines has exactly one live definition in the tree.
     while IFS= read -r name; do
         esc="$(printf '%s' "$name" | sed 's/[]\/$*.^[]/\\&/g')"
-        live="$(find "$tree" -type f -name '*.rules' -exec cat {} + \
+        live="$(find "$tree" -type f -name '*.rules' -exec awk '1' {} + \
             | grep -v '^[[:space:]]*#' | grep -c "\"name\"[[:space:]]*:[[:space:]]*\"${esc}\"" || true)"
         if [ "$live" != "1" ]; then
             echo "FATAL: '$name' has $live live definitions after pruning (expected 1)"

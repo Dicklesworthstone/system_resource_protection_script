@@ -47,6 +47,8 @@ HAS_SYSTEMD=0
 # observation, and as of startup verification (see srps_start_ananicy_service).
 SRPS_SERVICE_NRESTARTS=""
 SRPS_STARTUP_NRESTARTS=""
+# Interprocess lock file created by ananicy-cpp (overridable for sandbox tests).
+SRPS_ANANICY_MUTEX="${SRPS_ANANICY_MUTEX:-/dev/shm/AnanicyCppMutex}"
 IS_WSL=0
 HAS_APT=0
 APT_UPDATED=0
@@ -356,19 +358,71 @@ srps_service_stable() {
     SRPS_SERVICE_NRESTARTS="$(grep -E '^NRestarts=' <<< "$previous")"
 }
 
-# Start (or restart) ananicy-cpp and require it to stay up; exits on failure.
-# A unit that crash-looped into its start limit refuses manual starts until
-# the limit window passes, so clear that state (and the rate-limit counter)
-# first: the binary has just been validated or rebuilt. Restart even a running
-# unit so updated rules and a rebuilt binary load. The restart count observed
-# here lets the final summary catch a crash-restart that happens after this
-# window and is followed by a stable new process.
-srps_start_ananicy_service() {
-    sudo systemctl reset-failed ananicy-cpp >/dev/null 2>&1 || true
-    if ! sudo systemctl enable --now ananicy-cpp >/dev/null 2>&1; then
-        die "Failed to enable/start ananicy-cpp; check with: sudo systemctl status ananicy-cpp"
+# Return 0 if an ananicy-cpp process is running, 1 if confirmed not running,
+# and 2 if process lookup is unavailable or errors (fail safe; never guess).
+srps_ananicy_process_running() {
+    local rc=0
+    if command -v pgrep >/dev/null 2>&1; then
+        sudo pgrep -x ananicy-cpp >/dev/null 2>&1 || rc=$?
+    elif command -v pidof >/dev/null 2>&1; then
+        sudo pidof ananicy-cpp >/dev/null 2>&1 || rc=$?
+    else
+        return 2
     fi
-    if ! sudo systemctl restart ananicy-cpp >/dev/null 2>&1 || ! srps_service_stable; then
+    if [ "$rc" -eq 0 ]; then
+        return 0
+    elif [ "$rc" -eq 1 ]; then
+        return 1
+    fi
+    return 2
+}
+
+# Remove an orphaned ananicy-cpp interprocess mutex when no ananicy-cpp process
+# exists. Refuse symlinks/non-regular paths in /dev/shm and fail safe when
+# process presence cannot be confirmed.
+srps_clear_stale_ananicy_mutex() {
+    local mutex="${SRPS_ANANICY_MUTEX:-/dev/shm/AnanicyCppMutex}"
+    if sudo test -L "$mutex" 2>/dev/null; then
+        print_warning "Refusing to remove non-regular ananicy-cpp mutex path: $mutex" >&2
+        return 0
+    fi
+    if ! sudo test -e "$mutex" 2>/dev/null; then
+        return 0
+    fi
+    if ! sudo test -f "$mutex" 2>/dev/null; then
+        print_warning "Refusing to remove non-regular ananicy-cpp mutex path: $mutex" >&2
+        return 0
+    fi
+    local proc_rc=0
+    srps_ananicy_process_running || proc_rc=$?
+    if [ "$proc_rc" -eq 0 ]; then
+        return 0
+    elif [ "$proc_rc" -ne 1 ]; then
+        print_warning "Cannot verify whether ananicy-cpp is running; leaving $mutex in place" >&2
+        return 0
+    fi
+    print_info "Removing stale ananicy-cpp mutex ($mutex); no ananicy-cpp process is running."
+    sudo rm -f -- "$mutex" >/dev/null 2>&1 || true
+}
+
+# Stop any running instance, clear failure/start-limit state and any orphaned
+# mutex left by a killed instance, enable the unit without starting a throwaway
+# process, then start once and require it to stay up; exits on failure.
+#
+# Why not `enable --now` followed immediately by `restart`: a SIGTERM landing
+# while the first instance is still starting can leave /dev/shm/AnanicyCppMutex
+# behind, causing every subsequent start to exit 1 with
+# "Ananicy Cpp is already running!" (#11). One stop + one start still reloads
+# updated rules and a rebuilt binary. The restart count observed here lets the
+# final summary catch a crash-restart that happens after this window.
+srps_start_ananicy_service() {
+    sudo systemctl stop ananicy-cpp >/dev/null 2>&1 || true
+    sudo systemctl reset-failed ananicy-cpp >/dev/null 2>&1 || true
+    srps_clear_stale_ananicy_mutex
+    if ! sudo systemctl enable ananicy-cpp >/dev/null 2>&1; then
+        die "Failed to enable ananicy-cpp; check with: sudo systemctl status ananicy-cpp"
+    fi
+    if ! sudo systemctl start ananicy-cpp >/dev/null 2>&1 || ! srps_service_stable; then
         die "ananicy-cpp did not remain running; inspect sudo systemctl status ananicy-cpp and sudo journalctl -u ananicy-cpp"
     fi
     SRPS_STARTUP_NRESTARTS="$SRPS_SERVICE_NRESTARTS"
@@ -703,7 +757,7 @@ EOF
 
     if [ "$HAS_SYSTEMD" -eq 1 ]; then
         print_info "Enabling and starting ananicy-cpp service..."
-        if maybe_dry_run "Would systemctl daemon-reload && enable --now ananicy-cpp"; then
+        if maybe_dry_run "Would systemctl daemon-reload, enable, and start ananicy-cpp"; then
             :
         else
             sudo systemctl daemon-reload
@@ -1779,10 +1833,28 @@ fi
 have_ananicy() {
   command -v ananicy-cpp >/dev/null 2>&1 || [ -x /usr/local/bin/ananicy-cpp ] || [ -x /usr/bin/ananicy-cpp ]
 }
+reload_ananicy_service() {
+  local mutex="${SRPS_ANANICY_MUTEX:-/dev/shm/AnanicyCppMutex}" proc_rc=0
+  sudo systemctl daemon-reload
+  sudo systemctl stop ananicy-cpp >/dev/null 2>&1 || true
+  sudo systemctl reset-failed ananicy-cpp >/dev/null 2>&1 || true
+  if ! sudo test -L "$mutex" 2>/dev/null && sudo test -f "$mutex" 2>/dev/null; then
+    if command -v pgrep >/dev/null 2>&1; then
+      sudo pgrep -x ananicy-cpp >/dev/null 2>&1 || proc_rc=$?
+    elif command -v pidof >/dev/null 2>&1; then
+      sudo pidof ananicy-cpp >/dev/null 2>&1 || proc_rc=$?
+    else
+      proc_rc=2
+    fi
+    if [ "$proc_rc" -eq 1 ]; then
+      sudo rm -f -- "$mutex" >/dev/null 2>&1 || true
+    fi
+  fi
+  sudo systemctl start ananicy-cpp
+}
 if [ "${SRPS_JSON:-0}" = "1" ]; then
   if have_ananicy && command -v systemctl >/dev/null 2>&1; then
-    sudo systemctl daemon-reload
-    ok=$(sudo systemctl restart ananicy-cpp >/dev/null 2>&1 && echo true || echo false)
+    ok=$(reload_ananicy_service >/dev/null 2>&1 && echo true || echo false)
     sleep 2
     count=$(sudo journalctl -u ananicy-cpp -n 20 --no-pager 2>/dev/null | grep -oP 'Worker initialized with \K[0-9]+' | head -1 || echo '?')
     printf '{"restarted":%s,"rules":"%s"}\n' "$ok" "$count"
@@ -1800,8 +1872,7 @@ if [ ! -d /etc/ananicy.d ]; then
 fi
 
 if have_ananicy && command -v systemctl >/dev/null 2>&1; then
-  sudo systemctl daemon-reload
-  sudo systemctl restart ananicy-cpp
+  reload_ananicy_service
   sleep 2
   count=$(sudo journalctl -u ananicy-cpp -n 20 --no-pager 2>/dev/null | grep -oP 'Worker initialized with \K[0-9]+' | head -1 || echo '?')
   echo "$(tput bold 2>/dev/null || true)ananicy-cpp restarted$(tput sgr0 2>/dev/null || true); rules loaded: ${count}"
