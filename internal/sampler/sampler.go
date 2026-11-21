@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/system_resource_protection_script/internal/model"
-	"github.com/shirou/gopsutil/v3/cpu"
-	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/load"
-	"github.com/shirou/gopsutil/v3/mem"
-	"github.com/shirou/gopsutil/v3/net"
-	"github.com/shirou/gopsutil/v3/process"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/disk"
+	"github.com/shirou/gopsutil/v4/load"
+	"github.com/shirou/gopsutil/v4/mem"
+	"github.com/shirou/gopsutil/v4/net"
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 // Sampler periodically emits Samples built from procfs and best-effort GPU/Batt reads.
@@ -135,7 +135,7 @@ func (s *Sampler) sample(now time.Time) model.Sample {
 // essentials reads the memory, swap and load collectors without ever
 // dereferencing a nil result (#7). A failed collector yields a zero value and
 // its name in unavailable. A memory reading with Total == 0 also counts as
-// unavailable: gopsutil v3 returns a nonnil zero stat when /proc/meminfo
+// unavailable: gopsutil may return a nonnil zero stat when /proc/meminfo
 // cannot be read. Swap with Total == 0 is legitimate (no swap configured).
 func essentials(
 	vm func() (*mem.VirtualMemoryStat, error),

@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/shirou/gopsutil/v3/load"
-	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/shirou/gopsutil/v4/load"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
 func okVM() (*mem.VirtualMemoryStat, error) {
@@ -42,7 +42,7 @@ func TestEssentialsNeverDereferenceNil(t *testing.T) {
 }
 
 func TestEssentialsZeroMemoryTotalIsUnavailable(t *testing.T) {
-	// gopsutil v3 returns a nonnil zero stat without an error when
+	// gopsutil may return a nonnil zero stat without an error when
 	// /proc/meminfo cannot be read; that must not be published as 0 bytes.
 	vmZero := func() (*mem.VirtualMemoryStat, error) { return &mem.VirtualMemoryStat{}, nil }
 	_, _, _, unavailable := essentials(vmZero, okSwap, okLoad)
